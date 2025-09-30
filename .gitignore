@@ -1,0 +1,38 @@
+# Создай .gitignore файл
+echo "# Python
+venv/
+venvsemantic/
+env/
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Data files
+data/
+*.pdf
+*.docx
+*.doc
+*.xlsx
+*.dwg
+*.dxf
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Qdrant
+qdrant_storage/" > .gitignore
