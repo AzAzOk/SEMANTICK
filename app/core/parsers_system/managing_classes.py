@@ -159,7 +159,7 @@ class ParserManager:
 
         """Получение расширения файла"""
 
-        return file_path.lower().split('.')[-1] if file_path else None
+        return file_path.lower().split('.')[-1] if file_path else ''
     
 
     def _find_parser_in_registry(self, extension: str) -> Optional[Type[BaseParser]]:
@@ -184,3 +184,10 @@ class ParserManager:
             return None
         parser_instance = parser_class()
         return parser_instance.parse(file_path)
+    
+    
+    def _file_name(self, file_path: str) -> str:
+
+        """Получение имени файла из пути"""
+
+        return file_path.lower().split('\\')[-1] if file_path else None

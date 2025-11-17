@@ -14,7 +14,7 @@ class ChunkType(str, Enum):
 @dataclass
 class ChunkMetadata:
 
-    """тех метаданные чанка"""
+    """Тех метаданные чанка"""
 
     file_path: str
     file_name: str
@@ -31,8 +31,8 @@ class BusinessMetadata:
 
     """Метаданные из БД"""
 
-    doc_number: str
-    file_path: str
+    doc_number: str = None
+    file_path: str = None
     
     id: int = 1
 

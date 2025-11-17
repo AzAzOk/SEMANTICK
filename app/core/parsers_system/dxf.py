@@ -1,47 +1,63 @@
 from typing import List, Dict, Any
 import ezdxf
+import re
+import hashlib
+from collections import defaultdict
 from .super_class import BaseParser, ParserResult
 
-class DXFParser(BaseParser):
 
+class DXFParser(BaseParser):
     """Парсер DXF файлов (AutoCAD Drawing Exchange Format)"""
     
-    def __init__(self, extract_metadata: bool = True, extract_blocks: bool = True,
-                 search_in_blocks: bool = True, search_in_layouts: bool = True):
-        self.extract_metadata = extract_metadata
-        self.extract_blocks = extract_blocks
-        self.search_in_blocks = search_in_blocks
-        self.search_in_layouts = search_in_layouts
+    def __init__(self):
+        self.text_hash_map = {}
+        self.extracted_texts = []
     
-
     def parse(self, file_path: str, **params) -> ParserResult:
+        """
+        Парсинг DXF файла с извлечением всего текстового содержимого
+        
+        Args:
+            file_path: Путь к DXF файлу
+            **params: Дополнительные параметры (игнорируются)
+            
+        Returns:
+            ParserResult с текстовым содержимым
+        """
         try:
-            # Извлекаем параметры поиска
-            search_in_blocks = params.get('search_in_blocks', self.search_in_blocks)
-            search_in_layouts = params.get('search_in_layouts', self.search_in_layouts)
-            search_in_entities = params.get('search_in_entities', True)
-            deep_search = params.get('deep_search', True)
-            
             # Открываем DXF файл
-            doc = ezdxf.readfile(file_path)
+            dxf_doc = ezdxf.readfile(file_path)
             
-            # Ищем текст в РАЗНЫХ местах
-            text_content = ""
+            # Сбрасываем состояние
+            self.text_hash_map.clear()
+            self.extracted_texts.clear()
             
-            if search_in_entities:
-                text_content += self._extract_from_entities(doc)
+            # Обработка modelspace
+            msp = dxf_doc.modelspace()
+            self._process_entities(msp, context='modelspace')
             
-            if search_in_blocks:
-                text_content += self._extract_from_blocks(doc, deep_search)
+            # Обработка всех layouts (включая Paper_Space)
+            for layout in dxf_doc.layouts:
+                self._process_entities(layout, context=f'layout_{layout.name}')
             
-            if search_in_layouts:
-                text_content += self._extract_from_layouts(doc)
+            # Обработка блоков
+            for block in dxf_doc.blocks:
+                if not block.name.startswith('*'):  # Пропускаем системные блоки
+                    self._process_entities(block, context=f'block_{block.name}')
             
-            # Извлекаем метаданные
-            metadata = self._extract_metadata(doc) if self.extract_metadata else {}
+            # Дедупликация текстов
+            deduplicated_data = self._deduplicate_texts(self.extracted_texts)
             
-            # Формируем итоговый текст
-            final_text = self._format_output(text_content, metadata, params)
+            # Формирование итогового текста
+            final_text = self._format_text_output(deduplicated_data)
+            
+            # Минимальные метаданные
+            metadata = {
+                'dxf_version': str(dxf_doc.dxfversion),
+                'total_texts': len(deduplicated_data),
+                'unique_texts': len(deduplicated_data),
+                'text_types': self._count_text_types(deduplicated_data)
+            }
             
             return ParserResult(
                 success=True,
@@ -60,213 +76,290 @@ class DXFParser(BaseParser):
                 file_path=file_path
             )
     
-    def _extract_from_entities(self, doc) -> str:
-
-        """Извлечение текста из entities (прямых объектов)"""
-
-        text_parts = []
-        msp = doc.modelspace()
-        
-        # Счетчики найденных объектов
-        counters = {'TEXT': 0, 'MTEXT': 0, 'ATTDEF': 0, 'ATTRIB': 0}
-        
-        # TEXT entities
-        for text in msp.query('TEXT'):
-            if text.dxf.text and text.dxf.text.strip():
-                text_parts.append(f"TEXT: {text.dxf.text}")
-                counters['TEXT'] += 1
-        
-        # MTEXT entities (многострочный текст)
-        for mtext in msp.query('MTEXT'):
-            if mtext.text and mtext.text.strip():
-                text_parts.append(f"MTEXT: {mtext.text}")
-                counters['MTEXT'] += 1
-        
-        # ATTDEF (определения атрибутов)
-        for attdef in msp.query('ATTDEF'):
-            if attdef.dxf.tag and attdef.dxf.default_value:
-                text_parts.append(f"ATTR_DEF: {attdef.dxf.tag} = {attdef.dxf.default_value}")
-                counters['ATTDEF'] += 1
-        
-        # ATTRIB (атрибуты вставленных блоков)
-        for attrib in msp.query('ATTRIB'):
-            if attrib.dxf.text and attrib.dxf.text.strip():
-                text_parts.append(f"ATTR: {attrib.dxf.text}")
-                counters['ATTRIB'] += 1
-        
-        # Добавляем статистику
-        if any(counters.values()):
-            text_parts.append(f"\n📊 Найдено в entities: TEXT={counters['TEXT']}, MTEXT={counters['MTEXT']}, ATTDEF={counters['ATTDEF']}, ATTRIB={counters['ATTRIB']}")
-        
-        return "\n".join(text_parts) + "\n" if text_parts else ""
+    def _process_entities(self, container, context='main'):
+        """Универсальный обход всех сущностей в контейнере"""
+        for entity in container:
+            self._process_entity(entity, context)
     
-
-    def _extract_from_blocks(self, doc, deep_search: bool = True) -> str:
-
-        """Извлечение текста из блоков"""
-
-        text_parts = []
-        total_blocks_searched = 0
-        total_text_found = 0
+    def _process_entity(self, entity, context):
+        """Диспетчеризация по типу сущности"""
+        entity_type = entity.dxftype()
+        handler = self._entity_handlers().get(entity_type)
         
-        for block in doc.blocks:
-            # Пропускаем системные блоки
-            if block.name.startswith('*'):
-                continue
-                
-            total_blocks_searched += 1
-            block_text_parts = []
-            
-            # Ищем текст внутри блока
-            for entity in block:
-                entity_text = self._extract_text_from_entity(entity)
-                if entity_text:
-                    block_text_parts.append(f"  - {entity_text}")
-                    total_text_found += 1
-            
-            # Если в блоке нашли текст - добавляем в результат
-            if block_text_parts:
-                text_parts.append(f"🔷 БЛОК: {block.name}")
-                text_parts.extend(block_text_parts)
-                text_parts.append("")  # Пустая строка для разделения
-        
-        # Добавляем статистику по блокам
-        if total_blocks_searched > 0:
-            text_parts.append(f"📊 Поиск в блоках: проверено {total_blocks_searched} блоков, найдено текста в {total_text_found} местах")
-        
-        return "\n".join(text_parts) + "\n" if text_parts else ""
+        if handler:
+            result = handler(entity, context)
+            if result is not None:
+                if isinstance(result, list):
+                    for item in result:
+                        item['original_entity'] = entity
+                        self.extracted_texts.append(item)
+                else:
+                    result['original_entity'] = entity
+                    self.extracted_texts.append(result)
     
-
-    def _extract_from_layouts(self, doc) -> str:
-
-        """Извлечение текста из layout'ов (Paper Space)"""
-
-        text_parts = []
-        
-        for layout in doc.layouts:
-            # Пропускаем Model Space (уже обработали)
-            if layout.name == 'Model':
-                continue
-                
-            layout_text_parts = []
-            
-            # Ищем текст в layout'е
-            for entity in layout:
-                entity_text = self._extract_text_from_entity(entity)
-                if entity_text:
-                    layout_text_parts.append(f"  - {entity_text}")
-            
-            # Если в layout'е нашли текст
-            if layout_text_parts:
-                text_parts.append(f"📄 LAYOUT: {layout.name}")
-                text_parts.extend(layout_text_parts)
-                text_parts.append("")
-        
-        return "\n".join(text_parts) + "\n" if text_parts else ""
+    def _entity_handlers(self):
+        """Словарь обработчиков по типу сущности"""
+        return {
+            'TEXT': self._extract_text_data,
+            'MTEXT': self._extract_mtext_data,
+            'ATTDEF': self._extract_attdef_data,
+            'ATTRIB': self._extract_attrib_data,
+            'INSERT': self._extract_insert_data,
+            'ACAD_TABLE': self._extract_acad_table_data
+        }
     
-
-    def _extract_text_from_entity(self, entity) -> str:
-
-        """Извлечение текста из конкретного entity"""
-
+    def _extract_text_data(self, entity, context):
+        """Извлечение TEXT"""
+        text = entity.dxf.text
+        if not text or not text.strip():
+            return None
+            
+        return {
+            'type': 'TEXT',
+            'text': text,
+            'plain_text': self._extract_plain_text(text),
+            'context': context,
+            'position': getattr(entity.dxf, 'insert', None)
+        }
+    
+    def _extract_mtext_data(self, entity, context):
+        """Извлечение MTEXT"""
+        text = entity.text
+        if not text or not text.strip():
+            return None
+            
+        return {
+            'type': 'MTEXT',
+            'text': text,
+            'plain_text': self._extract_plain_text(text),
+            'context': context,
+            'position': getattr(entity, 'insert', None)
+        }
+    
+    def _extract_attdef_data(self, entity, context):
+        """Извлечение ATTDEF"""
+        text = entity.dxf.text
+        if not text or not text.strip():
+            return None
+            
+        tag = getattr(entity.dxf, 'tag', '')
+        return {
+            'type': 'ATTDEF',
+            'text': text,
+            'plain_text': self._extract_plain_text(text),
+            'tag': tag,
+            'context': context,
+            'position': getattr(entity.dxf, 'insert', None)
+        }
+    
+    def _extract_attrib_data(self, entity, context):
+        """Извлечение ATTRIB"""
+        text = entity.dxf.text
+        if not text or not text.strip():
+            return None
+            
+        tag = getattr(entity.dxf, 'tag', '')
+        return {
+            'type': 'ATTRIB',
+            'text': text,
+            'plain_text': self._extract_plain_text(text),
+            'tag': tag,
+            'context': context,
+            'position': getattr(entity.dxf, 'insert', None)
+        }
+    
+    def _extract_insert_data(self, entity, context):
+        """Извлечение атрибутов из INSERT (блоков)"""
+        attribs = getattr(entity, 'attribs', [])
+        attrib_texts = []
+        
+        for attrib in attribs:
+            attrib_data = self._extract_attrib_data(
+                attrib, 
+                context=f'insert_{getattr(entity.dxf, "name", "unknown")}'
+            )
+            if attrib_data:
+                attrib_texts.append(attrib_data)
+        
+        return attrib_texts if attrib_texts else None
+    
+    def _extract_acad_table_data(self, entity, context):
+        """
+        КРИТИЧЕСКИ ВАЖНО: Извлечение текста из ACAD_TABLE с сохранением структуры
+        """
+        table_texts = []
+        
         try:
-            if entity.dxftype() == 'TEXT' and entity.dxf.text and entity.dxf.text.strip():
-                return f"TEXT: {entity.dxf.text}"
-            elif entity.dxftype() == 'MTEXT' and entity.text and entity.text.strip():
-                return f"MTEXT: {entity.text}"
-            elif entity.dxftype() == 'ATTDEF' and entity.dxf.tag and entity.dxf.default_value:
-                return f"ATTR_DEF: {entity.dxf.tag} = {entity.dxf.default_value}"
-            elif entity.dxftype() == 'ATTRIB' and entity.dxf.text and entity.dxf.text.strip():
-                return f"ATTR: {entity.dxf.text}"
-        except:
-            pass
-        return ""
-    
-
-    def _extract_metadata(self, doc) -> Dict[str, Any]:
-
-        """Извлечение метаданных DXF файла"""
-
-        metadata = {
-            'dxf_version': str(doc.dxfversion),
-            'layers_count': len(doc.layers),
-            'blocks_count': len(doc.blocks),
-            'entities_count': len(doc.modelspace()),
-            'layouts_count': len(doc.layouts) - 1,  # -1 потому что Model тоже layout
-            'file_units': str(doc.header.get('$INSUNITS', 'Unknown')),
-        }
-        
-        # Статистика по типам объектов
-        msp = doc.modelspace()
-        entity_stats = {
-            'TEXT': len(msp.query('TEXT')),
-            'MTEXT': len(msp.query('MTEXT')),
-            'ATTDEF': len(msp.query('ATTDEF')),
-            'ATTRIB': len(msp.query('ATTRIB')),
-            'INSERT': len(msp.query('INSERT')),  # Вставки блоков
-        }
-        metadata['entity_statistics'] = entity_stats
-        
-        # Информация о слоях
-        layers_info = []
-        for layer in doc.layers:
-            layers_info.append({
-                'name': layer.dxf.name,
-                'color': layer.dxf.color,
-                'is_off': layer.is_off(),
-            })
-        metadata['layers'] = layers_info
-        
-        # Информация о блоках
-        blocks_info = []
-        for block in doc.blocks:
-            if not block.name.startswith('*'):
-                blocks_info.append({
-                    'name': block.name,
-                    'entities_count': len(block),
-                })
-        metadata['blocks'] = blocks_info
-        
-        return metadata
-    
-
-    def _format_output(self, text_content: str, metadata: Dict, params: Dict) -> str:
-
-        """Форматирование итогового текста"""
-
-        output_parts = []
-        
-        # Добавляем метаданные
-        if params.get('include_metadata', True):
-            output_parts.append("=== МЕТАДАННЫЕ DXF ===")
-            output_parts.append(f"Версия DXF: {metadata.get('dxf_version', 'Unknown')}")
-            output_parts.append(f"Количество слоев: {metadata.get('layers_count', 0)}")
-            output_parts.append(f"Количество блоков: {metadata.get('blocks_count', 0)}")
-            output_parts.append(f"Количество объектов в Model: {metadata.get('entities_count', 0)}")
+            # Получаем proxy-содержимое таблицы
+            proxy_content = list(entity.proxy_graphic_content())
             
-            # Статистика объектов
-            stats = metadata.get('entity_statistics', {})
-            output_parts.append(f"📊 Объекты: TEXT={stats.get('TEXT', 0)}, MTEXT={stats.get('MTEXT', 0)}, ATTDEF={stats.get('ATTDEF', 0)}, ATTRIB={stats.get('ATTRIB', 0)}")
-            output_parts.append("")
+            # Собираем все текстовые сущности
+            text_entities = []
+            for i, proxy_entity in enumerate(proxy_content):
+                entity_type = proxy_entity.dxftype()
+                
+                if entity_type in ['TEXT', 'MTEXT']:
+                    # Определяем текст в зависимости от типа
+                    if entity_type == 'TEXT':
+                        entity_text = proxy_entity.dxf.text
+                        position = getattr(proxy_entity.dxf, 'insert', None)
+                    else:  # MTEXT
+                        entity_text = proxy_entity.text
+                        position = getattr(proxy_entity, 'insert', None)
+                    
+                    if not entity_text or not entity_text.strip():
+                        continue
+                    
+                    text_entities.append({
+                        'index': i,
+                        'text': entity_text,
+                        'position': position,
+                        'entity_type': entity_type
+                    })
+            
+            # Сортируем по позиции (Y убывает = row растёт, X возрастает = col растёт)
+            text_entities.sort(key=lambda x: (
+                -x['position'][1] if x['position'] else 0,
+                x['position'][0] if x['position'] else 0
+            ))
+            
+            # Группируем по строкам (Y-координата)
+            y_groups = {}
+            y_tolerance = 5.0
+            
+            for te in text_entities:
+                if te['position']:
+                    y = te['position'][1]
+                    # Ищем существующую группу с близкой Y-координатой
+                    found_group = None
+                    for existing_y in y_groups.keys():
+                        if abs(y - existing_y) <= y_tolerance:
+                            found_group = existing_y
+                            break
+                    
+                    if found_group is not None:
+                        y_groups[found_group].append(te)
+                    else:
+                        y_groups[y] = [te]
+            
+            # Определяем количество колонок
+            max_cols = max(len(row_items) for row_items in y_groups.values()) if y_groups else 1
+            
+            # Формируем строки таблицы
+            sorted_rows = sorted(y_groups.keys(), reverse=True)
+            table_rows = []
+            
+            for row_idx, y_coord in enumerate(sorted_rows):
+                row_items = sorted(y_groups[y_coord], key=lambda x: x['position'][0] if x['position'] else 0)
+                row_texts = [self._extract_plain_text(item['text']) for item in row_items]
+                table_rows.append(' | '.join(row_texts))
+            
+            # Создаём запись для таблицы
+            if table_rows:
+                table_text = '\n'.join(table_rows)
+                table_texts.append({
+                    'type': 'ACAD_TABLE',
+                    'text': table_text,
+                    'plain_text': table_text,
+                    'context': f"{context}:table",
+                    'rows_count': len(table_rows),
+                    'cols_count': max_cols
+                })
+            
+        except Exception as e:
+            # В случае ошибки просто пропускаем таблицу
+            pass
         
-        # Добавляем текстовое содержимое
-        if text_content.strip():
-            output_parts.append("=== ТЕКСТОВОЕ СОДЕРЖИМОЕ ===")
-            output_parts.append(text_content)
-        else:
-            output_parts.append("=== ТЕКСТ НЕ НАЙДЕН ===")
-            output_parts.append("Текстовые объекты не найдены в:")
-            output_parts.append("- Model Space entities")
-            output_parts.append("- Блоках (blocks)")
-            output_parts.append("- Layout'ах (Paper Space)")
-            output_parts.append("")
-            output_parts.append("💡 Возможные причины:")
-            output_parts.append("- Текст находится во вставленных блоках (INSERT)")
-            output_parts.append("- Файл содержит только геометрию без текста")
-            output_parts.append("- Текст в специализированных объектах")
-        
-        return "\n".join(output_parts)
+        return table_texts if table_texts else None
     
-
+    def _extract_plain_text(self, text: str) -> str:
+        """Очистка текста от DXF форматирования"""
+        if not text:
+            return text
+        
+        # Нормализация управляющих последовательностей
+        clean = text.replace('\\P', '\n').replace('\\p', '\n').replace('\\n', '\n')
+        
+        # Обработка групп вида {\C1;Some text}
+        clean = re.sub(r'\{\\[A-Za-z0-9]+;([^}]*)\}', r'\1', clean)
+        
+        # Удаляем escape-последовательности
+        clean = re.sub(r'\\[A-Za-z]+[0-9\.\-]*;?', '', clean)
+        
+        # Убираем фигурные скобки
+        clean = clean.replace('{', '').replace('}', '')
+        
+        # Сжимаем множественные пробелы
+        clean = re.sub(r'[ \t]+', ' ', clean).strip()
+        
+        return clean
+    
+    def _deduplicate_texts(self, text_data: List[Dict]) -> List[Dict]:
+        """Дедупликация текстов по MD5 хешу"""
+        text_groups = defaultdict(list)
+        unique_data = []
+        
+        for item in text_data:
+            full_text_content = item["text"].strip()
+            text_hash = hashlib.md5(full_text_content.encode('utf-8')).hexdigest()
+            text_groups[text_hash].append(item)
+        
+        for text_hash, items in text_groups.items():
+            if not items:
+                continue
+            
+            # Берём первый элемент как представителя группы
+            representative = items[0].copy()
+            representative["duplicate_count"] = len(items)
+            
+            unique_data.append(representative)
+        
+        return unique_data
+    
+    def _format_text_output(self, text_data: List[Dict]) -> str:
+        """Форматирование итогового текстового вывода"""
+        output_lines = []
+        
+        # Группируем по контексту
+        by_context = defaultdict(list)
+        for item in text_data:
+            by_context[item.get('context', 'unknown')].append(item)
+        
+        # Выводим тексты по контекстам
+        for context in sorted(by_context.keys()):
+            items = by_context[context]
+            
+            # Заголовок секции
+            output_lines.append(f"\n=== {context.upper()} ===\n")
+            
+            for item in items:
+                plain_text = item.get('plain_text', '').strip()
+                if plain_text:
+                    text_type = item.get('type', 'UNKNOWN')
+                    
+                    # Для таблиц добавляем информацию о структуре
+                    if text_type == 'ACAD_TABLE':
+                        rows = item.get('rows_count', 0)
+                        cols = item.get('cols_count', 0)
+                        output_lines.append(f"[TABLE {rows}x{cols}]")
+                        output_lines.append(plain_text)
+                        output_lines.append("")
+                    # Для атрибутов показываем тег
+                    elif 'tag' in item and item['tag']:
+                        output_lines.append(f"[{item['tag']}]: {plain_text}")
+                    # Для обычного текста
+                    else:
+                        output_lines.append(plain_text)
+        
+        return '\n'.join(output_lines)
+    
+    def _count_text_types(self, text_data: List[Dict]) -> Dict[str, int]:
+        """Подсчёт количества текстов по типам"""
+        counts = defaultdict(int)
+        for item in text_data:
+            counts[item.get('type', 'UNKNOWN')] += 1
+        return dict(counts)
+    
     def get_supported_extensions(self) -> List[str]:
+        """Поддерживаемые расширения файлов"""
         return ['.dxf']
