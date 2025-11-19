@@ -95,6 +95,11 @@ def add_chunks_to_qdrant(client, chunks: List[Dict[str, Any]], model: str = "bge
     """
     points = create_embeddings_from_chunks(chunks, model)
 
+    if not points:
+        # Нечего заливать — логируем и возвращаем пустой список
+        print("⚠️ create_embeddings_from_chunks вернул 0 точек — пропускаем upsert в Qdrant")
+        return []
+
     client.upsert(
         collection_name="document_archive",
         points=[models.PointStruct(**p) for p in points]
@@ -103,7 +108,7 @@ def add_chunks_to_qdrant(client, chunks: List[Dict[str, Any]], model: str = "bge
     print(f"✅ Загружено {len(points)} чанков в Qdrant")
     return points
 
-def reserch_similar_chunks(client, query: str, top_k: int = 5, model: str = "bge-m3:567m") -> List[Dict[str, Any]]:
+def reserch_similar_chunks(client, query: str, top_k: int = 15, model: str = "bge-m3:567m") -> List[Dict[str, Any]]:
     """
     Выполняет поиск похожих чанков в Qdrant по текстовому запросу.
     """

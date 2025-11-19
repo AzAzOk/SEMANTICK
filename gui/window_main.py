@@ -15,8 +15,8 @@ class Window(wx.Frame):
         value_gost="Введите сообщение"
     )
         self.output_field = self.text_print(
-                pos=(960, 50), 
-                size=(700, 1000),
+                pos=(560, 50), 
+                size=(1500, 1000),
                 # value_gost="Введите сообщение"
             )
 

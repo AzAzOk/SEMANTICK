@@ -8,9 +8,11 @@ from .pdf import PDFParser
 from .plain_text import PlainTextParser
 from .image import ImageOCRParser
 from .xlsx import XLSXParser
+from .xls import XLSParser
 from .dxf import DXFParser
 from .dwg import DWGParser
 from .super_class import BaseParser
+from .doc import DOCParser
 
 
 class FileValidator:
@@ -139,12 +141,12 @@ class ParserManager:
         default_parsers = {
             'pdf': PDFParser,
             'docx': DOCXParser,
-            # 'doc': DOCParser,
+            'doc': DOCParser,
             'xlsx': XLSXParser,
-            # 'xls': XLSXParser,
+            'xls': XLSParser,
             'txt': PlainTextParser,
             'dxf': DXFParser,
-            # 'dwg': DWGParser,
+            'dwg': DWGParser,
             'png': ImageOCRParser,
             'jpg': ImageOCRParser,
             'jpeg': ImageOCRParser,
