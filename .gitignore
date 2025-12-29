@@ -1,5 +1,4 @@
-echo "# Python
-venv/
+echo "venv/
 venvsemantic/
 env/
 .env
@@ -37,8 +36,5 @@ Thumbs.db
 qdrant_storage/" > .gitignore
 qdrant_data/
 
-# config
 config.py
-
-# Сертификаты
-*.pem
+*.pem" > .gitignore
