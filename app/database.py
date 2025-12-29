@@ -1,131 +1,158 @@
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
+from typing import List, Dict, Any
+import requests
+from app.config import QDRANT_HOST, QDRANT_PORT, COLLECTION_NAME, OLLAMA_MODEL, OLLAMA_URL
 
-client = QdrantClient(host="localhost", port=6333)
+# ===============================
+# CLIENT
+# ===============================
 
-try:
-    collections = client.get_collections()
-    print("Успешное подключение к Qdrant!")
-    print(f"Доступные коллекции: {[col.name for col in collections.collections]}")
-except Exception as e:
-    print(f" Ошибка подключения: {e}")
+client = QdrantClient(
+    host=QDRANT_HOST,
+    port=QDRANT_PORT,
+)
 
-def create_document_collection():
-    """Создает коллекцию для документов"""
-    
-    collection_name = "document_archive"
-    
+# ===============================
+# INIT-ФУНКЦИИ
+# ===============================
+
+def init_qdrant() -> None:
+    """
+    Проверка доступности Qdrant.
+    Вызывается ЯВНО (FastAPI startup / Celery init).
+    """
     try:
-        client.get_collection(collection_name)
-        print(f"Коллекция {collection_name} уже существует")
+        client.get_collections()
+        print("Qdrant доступен")
+    except Exception as e:
+        print(f"Qdrant недоступен: {e}")
+        raise
+
+
+def create_document_collection() -> None:
+    """
+    Создаёт коллекцию, если она не существует.
+    """
+    if client.collection_exists(COLLECTION_NAME):
+        print(f"ℹ️ Коллекция '{COLLECTION_NAME}' уже существует")
         return
-    except Exception:
-        print(f"Создаем коллекцию {collection_name}...")
-    
+
     client.create_collection(
-        collection_name=collection_name,
+        collection_name=COLLECTION_NAME,
         vectors_config=models.VectorParams(
             size=1024,
             distance=models.Distance.COSINE
         )
     )
-    
+
+    # Индексы payload (если нужны)
     client.create_payload_index(
-        collection_name=collection_name,
+        collection_name=COLLECTION_NAME,
         field_name="customer",
         field_schema=models.PayloadSchemaType.KEYWORD
     )
-    
+
     client.create_payload_index(
-        collection_name=collection_name, 
+        collection_name=COLLECTION_NAME,
         field_name="code",
         field_schema=models.PayloadSchemaType.KEYWORD
     )
-    
-    print(f"Коллекция {collection_name} создана!")
 
-create_document_collection()
+    print(f"✅ Коллекция '{COLLECTION_NAME}' создана")
 
-import requests
-from typing import List, Dict, Any
 
-def create_embeddings_from_chunks(chunks: List[Dict[str, Any]], model: str = "bge-m3:567m") -> List[Dict[str, Any]]:
+# ===============================
+# OLLAMA
+# ===============================
+
+def get_embedding(text: str, model: str = OLLAMA_MODEL) -> List[float]:
     """
-    Создает эмбеддинги для списка чанков через Ollama и возвращает список
-    объектов, готовых для вставки в Qdrant.
+    Получает embedding из Ollama.
     """
-    points: List[Dict[str, Any]] = []
+    response = requests.post(
+        f"{OLLAMA_URL}/api/embeddings",
+        json={
+            "model": model,
+            "prompt": text
+        },
+        timeout=60
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Ollama error: {response.text}")
+
+    return response.json()["embedding"]
+
+
+# ===============================
+# QDRANT OPS
+# ===============================
+
+def create_embeddings_from_chunks(
+    chunks: List[Dict[str, Any]],
+    model: str = OLLAMA_MODEL
+) -> List[models.PointStruct]:
+    """
+    Создаёт PointStruct'ы для Qdrant.
+    """
+    points: List[models.PointStruct] = []
 
     for chunk in chunks:
-        text = chunk["text"]
-        chunk_id = chunk["chunk_id"]
+        embedding = get_embedding(chunk["text"], model)
 
-        # Запрос в Ollama
-        response = requests.post(
-            "http://localhost:11434/api/embeddings",
-            json={"model": model, "prompt": text}
-        )
-
-        if response.status_code != 200:
-            raise RuntimeError(f"Ollama error for chunk {chunk_id}: {response.text}")
-
-        embedding = response.json()["embedding"]
-
-        # Готовим point для Qdrant
-        points.append({
-            "id": chunk_id,
-            "vector": embedding,
-            "payload": {
-                "text": text,
+        point = models.PointStruct(
+            id=chunk["chunk_id"],
+            vector=embedding,
+            payload={
+                "text": chunk["text"],
                 "word_count": chunk.get("word_count"),
                 "char_count": chunk.get("char_count"),
                 "metadata": chunk.get("metadata"),
                 "business_metadata": chunk.get("business_metadata"),
             }
-        })
+        )
+
+        points.append(point)
 
     return points
 
 
-from qdrant_client.http import models
+def add_chunks_to_qdrant(
+    chunks: List[Dict[str, Any]],
+    model: str = OLLAMA_MODEL
+) -> int:
+    """
+    Добавляет чанки в Qdrant.
+    Возвращает количество добавленных точек.
+    """
+    if not chunks:
+        print("⚠️ Нет чанков для загрузки в Qdrant")
+        return 0
 
-def add_chunks_to_qdrant(client, chunks: List[Dict[str, Any]], model: str = "bge-m3:567m") -> None:
-    """
-    Создает эмбеддинги и добавляет все чанки в Qdrant одной операцией.
-    """
     points = create_embeddings_from_chunks(chunks, model)
 
-    if not points:
-        # Нечего заливать — логируем и возвращаем пустой список
-        print("⚠️ create_embeddings_from_chunks вернул 0 точек — пропускаем upsert в Qdrant")
-        return []
-
     client.upsert(
-        collection_name="document_archive",
-        points=[models.PointStruct(**p) for p in points]
+        collection_name=COLLECTION_NAME,
+        points=points
     )
 
     print(f"✅ Загружено {len(points)} чанков в Qdrant")
-    return points
+    return len(points)
 
-def reserch_similar_chunks(client, query: str, top_k: int = 15, model: str = "bge-m3:567m") -> List[Dict[str, Any]]:
+
+def reserch_similar_chunks(
+    query: str,
+    top_k: int = 5,
+    model: str = OLLAMA_MODEL
+) -> List[Dict[str, Any]]:
     """
-    Выполняет поиск похожих чанков в Qdrant по текстовому запросу.
+    Поиск похожих чанков.
     """
-    # Получаем эмбеддинг для запроса
-    response = requests.post(
-        "http://localhost:11434/api/embeddings",
-        json={"model": model, "prompt": query}
-    )
+    query_embedding = get_embedding(query, model)
 
-    if response.status_code != 200:
-        raise RuntimeError(f"Ollama error for query: {response.text}")
-
-    query_embedding = response.json()["embedding"]
-
-    # Выполняем поиск в Qdrant
     search_result = client.search(
-        collection_name="document_archive",
+        collection_name=COLLECTION_NAME,
         query_vector=query_embedding,
         limit=top_k,
         with_payload=True

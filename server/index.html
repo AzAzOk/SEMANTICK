@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Панель загрузок</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="icon" href="/static/favicon.ico">
+    <link rel="stylesheet" href="/static/index.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-content">
+                <i class="fas fa-cloud-download-alt icon"></i>
+                <h1>Панель загрузок</h1>
+            </div>
+            <div class="status">
+                <div class="status-indicator"></div>
+                <span>Система активна</span>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <div class="card">
+                <h2 class="card-title"><i class="fas fa-folder-open"></i> Выбор данных</h2>
+                <div class="file-selection">
+                    <div class="input-group">
+                        <label><i class="fas fa-folder"></i> Выберите файлы для загрузки</label>
+                        <div class="folder-input">
+                            <input type="text" id="folderInput" class="file-input" placeholder="Файл не выбран" readonly>
+                            <button type="button" class="btn" id="selectFolderBtn">
+                                <i class="fas fa-folder-open"></i> Обзор
+                            </button>
+                            <input type="file" 
+                            id="fileInput" 
+                            class="hidden-file-input" 
+                            multiple 
+                            hidden 
+                            accept=".txt,.pdf,.docx,.doc,.xlsx,.xls,.dxf,.dwg,.png,.jpg,.jpeg,.tiff,.bmp">
+                        </div>
+                        <div class="folder-input">
+                            <input type="text" id="folderInputSecret" class="file-input" placeholder="Путь до папки">
+                            <!-- <button type="button" class="btn" id="selectFolderBtnSecret">
+                                <i class="fas fa-folder-open"></i> Обзор
+                            </button>
+                            <input type="file" 
+                            id="fileInputSecret" 
+                            class="hidden-file-input" 
+                            multiple 
+                            hidden 
+                            accept=".txt,.pdf,.docx,.doc,.xlsx,.xls,.dxf,.dwg,.png,.jpg,.jpeg,.tiff,.bmp"> -->
+                        </div>
+                    </div>
+
+                    <button class="btn" id="startUploadBtn" style="margin-top: 10px;">
+                        <i class="fas fa-upload"></i> Начать загрузку
+                    </button>
+                </div>
+            </div>
+
+            <div class="card log-output">
+                <div class="log-header">
+                    <h2 class="card-title"><i class="fas fa-terminal"></i> Журнал операций</h2>
+                    <div class="log-controls">
+                        <button class="btn btn-secondary" id="clearLogsBtn">
+                            <i class="fas fa-trash-alt"></i> Очистить
+                        </button>
+                        <button class="btn btn-secondary" id="pauseLogsBtn">
+                            <i class="fas fa-pause"></i> Пауза
+                        </button>
+                    </div>
+                </div>
+                <div class="log-content" id="logContent">
+                    <div class="log-entry info">
+                        <span class="log-timestamp">[--:--:--]</span> Система инициализирована. Панель загрузок готова к работе.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Панель загрузок &copy; 2024 | Версия 1.0.0</p>
+        </footer>
+    </div>
+    <script src="https://unpkg.com/magic-snowflakes/dist/snowflakes.min.js"></script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            new Snowflakes();
+        });
+        const fileInput = document.getElementById('fileInput');
+        const folderInput = document.getElementById('folderInput');
+
+        const folderInputSecret = document.getElementById('folderInputSecret')
+
+        const selectFolderBtn = document.getElementById('selectFolderBtn');
+        const selectFolderBtnSecret = document.getElementById('selectFolderBtnSecret')
+
+        const startUploadBtn = document.getElementById('startUploadBtn');
+        const clearLogsBtn = document.getElementById('clearLogsBtn');
+        const pauseLogsBtn = document.getElementById('pauseLogsBtn');
+        const logContent = document.getElementById('logContent');
+        
+        let logsPaused = false;
+        let uploadInProgress = false;
+        let logEntries = 0;
+        let selectedFiles = null;
+        let activeTasks = new Map();
+        let animationInterval = null;
+        
+
+        selectFolderBtn.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', () => {
+            addLog('info', 'Открыт диалог выбора файлов');
+            
+            if (fileInput.files.length > 0) {
+                selectedFiles = fileInput.files;
+                const fileCount = selectedFiles.length;
+                
+                const fileNames = Array.from(selectedFiles).map(f => f.name);
+                
+                folderInput.value = `Выбрано файлов: ${fileCount}`;
+                addLog('success', `Выбрано ${fileCount} файл(ов): ${fileNames.join(', ')}`);
+            } else {
+                selectedFiles = null;
+                folderInput.value = 'Файл не выбран';
+            }
+        });
+
+        async function startFolderBtn () {
+            const selectedFolder = folderInputSecret.files
+            const folderCount = selectedFolder.length;
+            addLog('info', `Начало загрузки ${folderCount} файл(ов)...`);
+            
+            try {
+                const formData = new FormData();
+                
+                for (let i = 0; i < selectedFolder.length; i++) {
+                    formData.append('file', selectedFolder[i]);
+                }
+                
+                addLog('info', `⬆Отправка ${folderCount} файлов на сервер...`);
+                
+                startUploadBtn.disabled = true;
+                uploadInProgress = true;
+                startButtonAnimation();
+                
+                const response = await fetch('/select-folder', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Ошибка сервера: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                addLog('success', `Файлы приняты в обработку: ${data.count} шт.`);
+                
+                data.files.forEach(fileInfo => {
+                    addLog('info', `Задача ${fileInfo.task_id.substring(0, 8)}... для файла: ${fileInfo.filename}`);
+                    trackTaskProgress(fileInfo.task_id, fileInfo.filename);
+                });
+                
+                selectedFiles = null;
+                fileInput.value = '';
+                folderInput.value = 'Файл не выбран';
+                
+            } catch (error) {
+                addLog('error', `Ошибка отправки: ${error.message}`);
+                stopButtonAnimation();
+                startUploadBtn.disabled = false;
+                uploadInProgress = false;
+            }
+        }
+
+        async function startFileBtn () {
+            const fileCount = selectedFiles.length;
+            addLog('info', `Начало загрузки ${fileCount} файл(ов)...`);
+            
+            try {
+                const formData = new FormData();
+                
+                for (let i = 0; i < selectedFiles.length; i++) {
+                    formData.append('file', selectedFiles[i]);
+                }
+                
+                addLog('info', `⬆Отправка ${fileCount} файлов на сервер...`);
+                
+                startUploadBtn.disabled = true;
+                uploadInProgress = true;
+                startButtonAnimation();
+                
+                const response = await fetch('/select-file', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Ошибка сервера: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                addLog('success', `Файлы приняты в обработку: ${data.count} шт.`);
+                
+                data.files.forEach(fileInfo => {
+                    addLog('info', `Задача ${fileInfo.task_id.substring(0, 8)}... для файла: ${fileInfo.filename}`);
+                    trackTaskProgress(fileInfo.task_id, fileInfo.filename);
+                });
+                
+                selectedFiles = null;
+                fileInput.value = '';
+                folderInput.value = 'Файл не выбран';
+                
+            } catch (error) {
+                addLog('error', `Ошибка отправки: ${error.message}`);
+                stopButtonAnimation();
+                startUploadBtn.disabled = false;
+                uploadInProgress = false;
+            }
+        }
+        
+        startUploadBtn.addEventListener('click', async() => {
+            if (!selectedFiles || selectedFiles.length === 0) {
+                if (!folderInputSecret.files || folderInputSecret.files.length === 0) {
+                    addLog('error', 'Сначала выберите папку или файл!');
+                    return;
+                }
+                addLog('info', 'startFolderBtn!');
+                await startFolderBtn()
+            }
+            addLog('info', 'startFileBtn!');
+            await startFileBtn()
+
+            
+            // const fileCount = selectedFiles.length;
+            // addLog('info', `Начало загрузки ${fileCount} файл(ов)...`);
+            
+            // try {
+            //     const formData = new FormData();
+                
+            //     for (let i = 0; i < selectedFiles.length; i++) {
+            //         formData.append('file', selectedFiles[i]);
+            //     }
+                
+            //     addLog('info', `⬆Отправка ${fileCount} файлов на сервер...`);
+                
+            //     startUploadBtn.disabled = true;
+            //     uploadInProgress = true;
+            //     startButtonAnimation();
+                
+            //     const response = await fetch('/select-folder', {
+            //         method: 'POST',
+            //         body: formData
+            //     });
+                
+            //     if (!response.ok) {
+            //         throw new Error(`Ошибка сервера: ${response.status}`);
+            //     }
+                
+            //     const data = await response.json();
+            //     addLog('success', `Файлы приняты в обработку: ${data.count} шт.`);
+                
+            //     data.files.forEach(fileInfo => {
+            //         addLog('info', `Задача ${fileInfo.task_id.substring(0, 8)}... для файла: ${fileInfo.filename}`);
+            //         trackTaskProgress(fileInfo.task_id, fileInfo.filename);
+            //     });
+                
+            //     selectedFiles = null;
+            //     fileInput.value = '';
+            //     folderInput.value = 'Файл не выбран';
+                
+            // } catch (error) {
+            //     addLog('error', `Ошибка отправки: ${error.message}`);
+            //     stopButtonAnimation();
+            //     startUploadBtn.disabled = false;
+            //     uploadInProgress = false;
+            // }
+        });
+        
+        function trackTaskProgress(taskId, filename) {
+            const taskInfo = {
+                filename: filename,
+                intervalId: null,
+                lastStatus: null,
+                lastProgress: -1,
+                lastStep: -1,
+                loggedSteps: new Set()
+            };
+            
+            const intervalId = setInterval(async () => {
+                try {
+                    const response = await fetch(`/task-status/${taskId}`);
+                    const status = await response.json();
+                    
+                    const currentStatus = status.status;
+                    const currentProgress = status.progress || 0;
+                    const currentStep = status.current_step || 0;
+                    const totalSteps = status.total_steps || 5;
+                    const message = status.message || '';
+                    
+                    if (currentStatus === 'pending') {
+                        if (taskInfo.lastStatus !== 'pending') {
+                            addLog('info', `⏸${filename}: В очереди на обработку...`);
+                            taskInfo.lastStatus = 'pending';
+                        }
+                    }
+                    
+                    else if (currentStatus === 'processing') {
+                        const stepKey = `${currentStep}-${currentProgress}`;
+                        
+                        if (!taskInfo.loggedSteps.has(stepKey)) {
+                            addLog('info', `${filename}: [${currentStep}/${totalSteps}] ${message} (${currentProgress}%)`);
+                            taskInfo.loggedSteps.add(stepKey);
+                            taskInfo.lastStatus = 'processing';
+                            taskInfo.lastStep = currentStep;
+                            taskInfo.lastProgress = currentProgress;
+                        }
+                    }
+                    
+                    else if (currentStatus === 'completed') {
+                        if (taskInfo.lastStatus !== 'completed') {
+                            clearInterval(intervalId);
+                            activeTasks.delete(taskId);
+                            
+                            const result = status.result || {};
+                            addLog('success', `${filename}: Обработан успешно!`);
+                            
+                            if (result.chunks_count) {
+                                addLog('info', `   Чанков: ${result.chunks_count}, Точек в БД: ${result.points_added}`);
+                            }
+                            
+                            taskInfo.lastStatus = 'completed';
+                        }
+                        
+                        checkAllTasksCompleted();
+                    }
+                    
+                    else if (currentStatus === 'failed') {
+                        if (taskInfo.lastStatus !== 'failed') {
+                            clearInterval(intervalId);
+                            activeTasks.delete(taskId);
+                            
+                            addLog('error', `${filename}: Ошибка - ${status.error || 'Неизвестная ошибка'}`);
+                            
+                            taskInfo.lastStatus = 'failed';
+                        }
+                        
+                        checkAllTasksCompleted();
+                    }
+                    
+                } catch (error) {
+                    console.error(`Ошибка проверки статуса ${taskId}:`, error);
+                }
+            }, 2000);
+            
+            taskInfo.intervalId = intervalId;
+            activeTasks.set(taskId, taskInfo);
+        }
+        
+        function checkAllTasksCompleted() {
+            if (activeTasks.size === 0 && uploadInProgress) {
+                addLog('success', 'ВСЕ ФАЙЛЫ ОБРАБОТАНЫ!');
+                addLog('info', 'Система готова к новой загрузке');
+                
+                stopButtonAnimation();
+                startUploadBtn.disabled = false;
+                uploadInProgress = false;
+            }
+        }
+        
+        function startButtonAnimation() {
+            let dots = 0;
+            animationInterval = setInterval(() => {
+                dots = (dots + 1) % 4;
+                const dotsStr = '.'.repeat(dots);
+                startUploadBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Обработка${dotsStr}`;
+            }, 500);
+        }
+        
+        function stopButtonAnimation() {
+            if (animationInterval) {
+                clearInterval(animationInterval);
+                animationInterval = null;
+            }
+            startUploadBtn.innerHTML = '<i class="fas fa-upload"></i> Начать загрузку';
+        }
+        
+        clearLogsBtn.addEventListener('click', function() {
+            logContent.innerHTML = '';
+            addLog('info', 'Журнал операций очищен');
+            logEntries = 0;
+        });
+        
+        pauseLogsBtn.addEventListener('click', function() {
+            logsPaused = !logsPaused;
+            const icon = pauseLogsBtn.querySelector('i');
+            if (logsPaused) {
+                icon.className = 'fas fa-play';
+                pauseLogsBtn.innerHTML = '<i class="fas fa-play"></i> Возобновить';
+                addLog('warning', 'Вывод логов приостановлен');
+            } else {
+                icon.className = 'fas fa-pause';
+                pauseLogsBtn.innerHTML = '<i class="fas fa-pause"></i> Пауза';
+                addLog('success', 'Вывод логов возобновлен');
+            }
+        });
+        
+        function addLog(type, message) {
+            if (logsPaused && type !== 'warning' && type !== 'error') return;
+            
+            const timestamp = new Date().toLocaleTimeString('ru-RU', { hour12: false });
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry ${type}`;
+            logEntry.innerHTML = `<span class="log-timestamp">[${timestamp}]</span> ${message}`;
+            
+            logContent.appendChild(logEntry);
+            logContent.scrollTop = logContent.scrollHeight;
+            
+            logEntries++;
+            
+            if (logEntries > 100) {
+                logContent.removeChild(logContent.firstChild);
+                logEntries--;
+            }
+        }
+        
+        window.addEventListener('load', function() {
+            setTimeout(() => {
+                addLog('info', 'Все компоненты загружены успешно');
+                addLog('success', 'Панель загрузок готова к использованию');
+            }, 1000);
+        });
+        
+        window.addEventListener('beforeunload', () => {
+            activeTasks.forEach((task) => {
+                clearInterval(task.intervalId);
+            });
+            if (animationInterval) {
+                clearInterval(animationInterval);
+            }
+        });
+    </script>
+</body></html>

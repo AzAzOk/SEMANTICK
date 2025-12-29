@@ -1,4 +1,3 @@
-# Создай .gitignore файл
 echo "# Python
 venv/
 venvsemantic/
@@ -36,3 +35,10 @@ Thumbs.db
 
 # Qdrant
 qdrant_storage/" > .gitignore
+qdrant_data/
+
+# config
+config.py
+
+# Сертификаты
+*.pem

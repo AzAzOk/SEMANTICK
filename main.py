@@ -3,7 +3,6 @@ from app.core.parsers_system import ParserManager
 from app.database import client, add_chunks_to_qdrant, reserch_similar_chunks
 import os
 from pathlib import Path
-
 def process_all_files_in_folder(folder_path):
     """
     Обрабатывает все файлы в указанной папке
@@ -67,12 +66,14 @@ def process_all_files_in_folder(folder_path):
                 continue
 
 # Использование
-if __name__ == "__main__":
-    # Ваш путь к папке
-    folder_path = "C:\\Users\\kulikovMA\\Desktop\\тест\\"
+# if __name__ == "__main__":
+#     os.environ["HTTP_PROXY"] = ""
+#     os.environ["HTTPS_PROXY"] = ""
+#     # Ваш путь к папке
+#     folder_path = "C:\\Users\\kulikovMA\\Desktop\\semantic_search_project.git\\uploads\\"
     
-    # Инициализация клиента Qdrant (предполагается, что client уже создан)
-    # client = QdrantClient(...)
+#     # Инициализация клиента Qdrant (предполагается, что client уже создан)
+#     # client = QdrantClient(...)
     
-    # Обрабатываем все файлы в папке
-    process_all_files_in_folder(folder_path)
+#     # Обрабатываем все файлы в папке
+#     process_all_files_in_folder(folder_path)
