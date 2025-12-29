@@ -38,3 +38,4 @@ qdrant_data/
 
 config.py
 *.pem" > .gitignore
+*.pem
