@@ -8,3 +8,16 @@ jobs:
     steps:
       - name: Print hello
         run: echo "Hello world!"
+  print_full_technical_info:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Print technical info
+        run: sudo lshw
+
+  print_short_technical_info:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Print short
+        run: sudo lshw -short
