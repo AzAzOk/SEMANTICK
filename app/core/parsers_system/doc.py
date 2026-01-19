@@ -8,135 +8,298 @@ from .super_class import BaseParser, ParserResult
 from .docx import DOCXParser
 from loguru import logger
 
-
 class DOCParser(BaseParser):
-    """Парсер для старых MS Word `.doc` файлов.
-
-    Стратегия:
-    1. Попытаться конвертировать `.doc` → `.docx` через LibreOffice (`soffice`).
-    2. Если конвертация удалась — делегировать разбор `DOCXParser`.
-    3. Фоллбек: попытаться получить plain-text через `antiword` или `catdoc`.
-    4. Если ничего не доступно — выбросить информативную ошибку.
-    """
+    """Парсер для старых MS Word `.doc` файлов."""
 
     def __init__(self):
         self.docx_parser = DOCXParser()
+        self.has_antiword_python = self._check_antiword_python()
+
+    def _check_antiword_python(self):
+        """Проверяет наличие python-пакета antiword"""
+        try:
+            import antiword
+            return True
+        except ImportError:
+            return False
 
     def parse(self, file_path: str, **params) -> ParserResult:
         temp_docx = None
         temp_dir = tempfile.gettempdir()
 
         try:
-            # Попытка 1: LibreOffice (soffice) конвертация
+            # ПОПЫТКА 1: Используем python-пакет antiword (если установлен)
+            if self.has_antiword_python:
+                try:
+                    import antiword
+                    logger.info(f"Используем python-пакет antiword для {file_path}")
+                    
+                    # Читаем файл как бинарный
+                    with open(file_path, 'rb') as f:
+                        content = f.read()
+                    
+                    # Используем antiword для парсинга
+                    text = antiword.reader.read(content)
+                    
+                    if text and text.strip():
+                        logger.success(f"Успешно распарсено с antiword: {len(text)} символов")
+                        metadata = {
+                            'parser': 'DOCParser→antiword(python)',
+                            'original_format': 'DOC',
+                            'text_length': len(text)
+                        }
+                        return ParserResult(
+                            success=True, 
+                            text=text, 
+                            error_message="", 
+                            metadata=metadata, 
+                            file_path=file_path
+                        )
+                except Exception as e:
+                    logger.warning(f"Python antiword не сработал: {e}")
+
+            # ПОПЫТКА 2: Используем бинарный antiword.exe (если есть)
+            antiword_exe = self._find_antiword_exe()
+            if antiword_exe:
+                logger.info(f"Пробуем бинарный antiword: {antiword_exe}")
+                
+                try:
+                    # Получаем директорию с antiword.exe
+                    anti_dir = Path(antiword_exe).parent
+                    
+                    # Пробуем разные кодировки
+                    encodings = ['UTF-8', 'cp1251', 'cp866', 'Default']
+                    
+                    for encoding in encodings:
+                        try:
+                            cmd = [antiword_exe]
+                            if encoding != 'Default':
+                                cmd.extend(['-m', encoding])
+                            cmd.append(str(Path(file_path).resolve()))
+                            
+                            logger.debug(f"Запускаем команду: {' '.join(cmd)}")
+                            
+                            proc = subprocess.run(
+                                cmd,
+                                capture_output=True,
+                                text=True,
+                                encoding='utf-8',
+                                errors='ignore',
+                                timeout=30,
+                                cwd=str(anti_dir),
+                                shell=True  # Важно для Windows!
+                            )
+                            
+                            if proc.returncode == 0 and proc.stdout and proc.stdout.strip():
+                                text = proc.stdout
+                                logger.success(f"Успешно с кодировкой {encoding}: {len(text)} символов")
+                                
+                                metadata = {
+                                    'parser': f'DOCParser→antiword(exe:{encoding})',
+                                    'original_format': 'DOC',
+                                    'text_length': len(text)
+                                }
+                                return ParserResult(
+                                    success=True, 
+                                    text=text, 
+                                    error_message="", 
+                                    metadata=metadata, 
+                                    file_path=file_path
+                                )
+                            else:
+                                logger.debug(f"Кодировка {encoding} не сработала: {proc.stderr[:100] if proc.stderr else 'нет ошибки'}")
+                                
+                        except Exception as e_enc:
+                            logger.debug(f"Ошибка с кодировкой {encoding}: {e_enc}")
+                            
+                except Exception as e:
+                    logger.warning(f"Ошибка при запуске antiword.exe: {e}")
+
+            # ПОПЫТКА 3: LibreOffice (soffice) конвертация
             soffice = self._find_soffice()
             if soffice:
+                logger.info(f"Пробуем LibreOffice: {soffice}")
+                
                 out_dir = os.path.join(temp_dir, f"doc_convert_out_{os.getpid()}")
                 os.makedirs(out_dir, exist_ok=True)
+                
                 try:
                     result = subprocess.run(
                         [soffice, "--headless", "--convert-to", "docx", "--outdir", out_dir, file_path],
                         capture_output=True,
                         text=True,
-                        timeout=90,
+                        timeout=120,  # Увеличиваем таймаут
+                        shell=True
                     )
 
-                    # ожидаем файл с тем же именем, но .docx
-                    candidate = os.path.join(out_dir, f"{Path(file_path).stem}.docx")
+                    # Ищем созданный файл
+                    base_name = Path(file_path).stem
+                    candidate = os.path.join(out_dir, f"{base_name}.docx")
+                    
+                    if not os.path.exists(candidate):
+                        # Может быть другое имя
+                        for f in os.listdir(out_dir):
+                            if f.endswith('.docx'):
+                                candidate = os.path.join(out_dir, f)
+                                break
+                    
                     if os.path.exists(candidate):
                         temp_docx = candidate
-                        logger.info(f"DOC конвертирован в DOCX через soffice: {temp_docx}")
-                        result = self.docx_parser.parse(temp_docx)
-                        # обновим метаданные
-                        if result.success:
-                            result.metadata.setdefault('converted_from', 'doc')
-                            result.metadata.setdefault('parser_chain', 'DOCParser→DOCXParser')
-                            result.file_path = file_path
-                        return result
-                    else:
-                        logger.warning(f"soffice не создал файл {candidate}. stdout: {result.stdout} stderr: {result.stderr}")
+                        logger.info(f"DOC конвертирован в DOCX: {temp_docx}")
+                        
+                        try:
+                            result = self.docx_parser.parse(temp_docx)
+                            if result.success:
+                                result.metadata['converted_from'] = 'doc'
+                                result.metadata['parser_chain'] = 'DOCParser→DOCXParser'
+                                result.file_path = file_path
+                                logger.success(f"Успешная конвертация через LibreOffice")
+                                return result
+                        except Exception as e_docx:
+                            logger.warning(f"Ошибка при парсинге конвертированного DOCX: {e_docx}")
+                            
                 except Exception as e:
                     logger.warning(f"Ошибка при вызове soffice: {e}")
 
-            # Попытка 2: antiword -> plain text
-            antiword = shutil.which('antiword') or self._find_executable('antiword')
-            if antiword:
-                try:
-                    anti_dir = Path(antiword).parent
-                    # First try: run antiword from its install dir (so it can find mapping files)
-                    proc = subprocess.run([antiword, str(file_path)], capture_output=True, text=True, timeout=30, cwd=str(anti_dir))
-                    if proc.returncode == 0 and proc.stdout:
-                        text = proc.stdout
-                        metadata = {'parser': 'DOCParser→antiword', 'original_format': 'DOC'}
-                        return ParserResult(success=True, text=text, error_message="", metadata=metadata, file_path=file_path)
-                    else:
-                        logger.warning(f"antiword failed (cwd={anti_dir}): rc={proc.returncode} stderr={proc.stderr}")
-
-                    # Попробуем явно указать mapping-файл (передавая только имя mapping, запускаем в каталоге anti_dir)
-                    try:
-                        candidates = ['cp1251.txt', 'cp866.txt', 'UTF-8.txt', 'Default']
-                        for cand in candidates:
-                            mapping = anti_dir / cand
-                            if mapping.exists():
-                                proc2 = subprocess.run([antiword, '-m', cand, str(file_path)], capture_output=True, text=True, timeout=30, cwd=str(anti_dir))
-                                if proc2.returncode == 0 and proc2.stdout:
-                                    text = proc2.stdout
-                                    metadata = {'parser': f'DOCParser→antiword (mapping={cand})', 'original_format': 'DOC'}
-                                    return ParserResult(success=True, text=text, error_message="", metadata=metadata, file_path=file_path)
-                                else:
-                                    logger.warning(f"antiword with mapping {cand} failed: rc={proc2.returncode} stderr={proc2.stderr}")
-                        # As a last resort, try invoking antiword via PowerShell like the user did
-                        try:
-                            # Try exact PowerShell invocation as the user suggested
-                            antiword_path = str(Path(antiword))
-                            mapping = 'cp1251.txt'
-                            # Build PowerShell command exactly like: & 'C:\Program Files\antiword\antiword.exe' -m cp1251.txt 'C:\path\to\file.doc'
-                            ps_cmd = f"& '{antiword_path}' -m {mapping} '{str(Path(file_path).resolve())}'"
-                            proc3 = subprocess.run([
-                                'powershell', '-NoProfile', '-Command', ps_cmd
-                            ], capture_output=True, text=True, timeout=40)
-                            if proc3.returncode == 0 and proc3.stdout:
-                                text = proc3.stdout
-                                metadata = {'parser': f"DOCParser→antiword (powershell mapping={mapping})", 'original_format': 'DOC'}
-                                return ParserResult(success=True, text=text, error_message="", metadata=metadata, file_path=file_path)
-                            else:
-                                logger.warning(f"antiword via PowerShell mapping {mapping} failed: rc={proc3.returncode} stderr={proc3.stderr}")
-                        except Exception as e_ps:
-                            logger.warning(f"antiword via PowerShell attempt error: {e_ps}")
-                    except Exception as e_map:
-                        logger.warning(f"antiword mapping attempt error: {e_map}")
-
-                except Exception as e:
-                    logger.warning(f"antiword execution error: {e}")
-
-            # Попытка 3: catdoc -> plain text
+            # ПОПЫТКА 4: catdoc (если есть)
             catdoc = shutil.which('catdoc') or self._find_executable('catdoc')
             if catdoc:
+                logger.info(f"Пробуем catdoc: {catdoc}")
+                
                 try:
-                    proc = subprocess.run([catdoc, file_path], capture_output=True, text=True, timeout=30)
-                    if proc.returncode == 0 and proc.stdout:
+                    proc = subprocess.run(
+                        [catdoc, file_path],
+                        capture_output=True,
+                        text=True,
+                        encoding='utf-8',
+                        errors='ignore',
+                        timeout=30,
+                        shell=True
+                    )
+                    
+                    if proc.returncode == 0 and proc.stdout and proc.stdout.strip():
                         text = proc.stdout
-                        metadata = {'parser': 'DOCParser→catdoc', 'original_format': 'DOC'}
-                        return ParserResult(success=True, text=text, error_message="", metadata=metadata, file_path=file_path)
-                    else:
-                        logger.warning(f"catdoc failed: rc={proc.returncode} stderr={proc.stderr}")
+                        metadata = {
+                            'parser': 'DOCParser→catdoc',
+                            'original_format': 'DOC',
+                            'text_length': len(text)
+                        }
+                        logger.success(f"Успешно с catdoc: {len(text)} символов")
+                        return ParserResult(
+                            success=True, 
+                            text=text, 
+                            error_message="", 
+                            metadata=metadata, 
+                            file_path=file_path
+                        )
+                        
                 except Exception as e:
-                    logger.warning(f"catdoc execution error: {e}")
+                    logger.warning(f"Ошибка при запуске catdoc: {e}")
 
-            raise RuntimeError(
-                "Не удалось конвертировать .doc: установите LibreOffice (soffice) или утилиты antiword/catdoc."
+            # ПОПЫТКА 5: win32com (только Windows)
+            try:
+                text = self._parse_with_win32com(file_path)
+                if text and text.strip():
+                    metadata = {
+                        'parser': 'DOCParser→win32com',
+                        'original_format': 'DOC',
+                        'text_length': len(text)
+                    }
+                    logger.success(f"Успешно с win32com: {len(text)} символов")
+                    return ParserResult(
+                        success=True, 
+                        text=text, 
+                        error_message="", 
+                        metadata=metadata, 
+                        file_path=file_path
+                    )
+            except Exception as e:
+                logger.debug(f"win32com не доступен: {e}")
+
+            # ВСЕ СПОСОБЫ НЕ СРАБОТАЛИ
+            error_msg = (
+                "Не удалось распарсить .doc файл. Установите один из:\n"
+                "1. LibreOffice (для конвертации)\n"
+                "2. antiword.exe (скачайте с официального сайта)\n"
+                "3. pip install pywin32 для работы через COM"
+            )
+            logger.error(f"DOC parsing failed: {file_path}")
+            
+            return ParserResult(
+                success=False, 
+                text="", 
+                error_message=error_msg, 
+                metadata={
+                    'parser': 'DOCParser',
+                    'error': 'parsing_failed',
+                    'original_format': 'DOC'
+                }, 
+                file_path=file_path
             )
 
         except Exception as e:
             logger.error(f"DOC parsing error: {e}")
-            return ParserResult(success=False, text="", error_message=str(e), metadata={'parser': 'DOCParser', 'error': str(e)}, file_path=file_path)
+            return ParserResult(
+                success=False, 
+                text="", 
+                error_message=str(e), 
+                metadata={'parser': 'DOCParser', 'error': str(e)}, 
+                file_path=file_path
+            )
 
         finally:
-            # если создали временный docx — удалим
+            # Удаляем временные файлы
             try:
                 if temp_docx and os.path.exists(temp_docx):
                     os.unlink(temp_docx)
             except Exception:
                 pass
+
+    def _find_antiword_exe(self) -> str:
+        """Ищет бинарный файл antiword.exe"""
+        # Проверяем PATH
+        antiword = shutil.which('antiword')
+        if antiword:
+            return antiword
+
+        # Проверяем стандартные пути
+        candidates = [
+            r"C:\antiword\antiword.exe",
+            r"C:\Program Files\antiword\antiword.exe",
+            r"C:\Program Files (x86)\antiword\antiword.exe",
+        ]
+        
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+        
+        return None
+
+    def _parse_with_win32com(self, file_path: str) -> str:
+        """Парсинг DOC через Microsoft Word COM API"""
+        try:
+            import win32com.client
+            import pythoncom
+            
+            pythoncom.CoInitialize()
+            
+            word = win32com.client.Dispatch("Word.Application")
+            word.visible = False
+            
+            doc = word.Documents.Open(os.path.abspath(file_path))
+            text = doc.Content.Text
+            
+            doc.Close(False)
+            word.Quit()
+            
+            pythoncom.CoUninitialize()
+            
+            return text
+            
+        except ImportError:
+            raise Exception("pywin32 не установлен")
+        except Exception as e:
+            raise Exception(f"Ошибка COM: {e}")
 
     def _find_soffice(self) -> str:
         # Проверяем PATH
@@ -156,7 +319,6 @@ class DOCParser(BaseParser):
         return None
 
     def _find_executable(self, name: str) -> str:
-        # Простая проверка обычных путей (Windows)
         possible = [
             rf"C:\Program Files\{name}\{name}.exe",
             rf"C:\Program Files (x86)\{name}\{name}.exe",
