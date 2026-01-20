@@ -95,8 +95,8 @@ h1 {
     flex-direction: column;
     width: 100%;
     max-width: min(1400px, 90vw);
-    height: min(80vh, 800px);
-    min-height: min(50vh, 400px);
+    height: min(80vh, 1000px);
+    min-height: min(50vh, 600px);
     gap: var(--gap-base);
     overflow-y: auto;
     padding: clamp(15px, 3vw, 25px);

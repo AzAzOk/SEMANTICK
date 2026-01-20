@@ -279,6 +279,7 @@
             font-size: 14px;
             overflow-y: auto;
             line-height: 1.5;
+             overflow-wrap: break-word;
         }
 
         .log-entry {
