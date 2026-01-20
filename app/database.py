@@ -2,7 +2,15 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from typing import List, Dict, Any
 import requests
-from app.config import QDRANT_HOST, QDRANT_PORT, COLLECTION_NAME, OLLAMA_MODEL, OLLAMA_URL
+import logging
+logger = logging.getLogger(__name__)
+from app.config import (
+    QDRANT_HOST,
+    QDRANT_PORT,
+    COLLECTION_NAME,
+    OLLAMA_MODEL,
+    OLLAMA_URL
+)
 
 # ===============================
 # CLIENT
@@ -17,6 +25,7 @@ client = QdrantClient(
 # INIT-ФУНКЦИИ
 # ===============================
 
+
 def init_qdrant() -> None:
     """
     Проверка доступности Qdrant.
@@ -24,9 +33,9 @@ def init_qdrant() -> None:
     """
     try:
         client.get_collections()
-        print("Qdrant доступен")
+        logger.info("Qdrant доступен")
     except Exception as e:
-        print(f"Qdrant недоступен: {e}")
+        logger.info(f"Qdrant недоступен: {e}")
         raise
 
 
@@ -35,7 +44,7 @@ def create_document_collection() -> None:
     Создаёт коллекцию, если она не существует.
     """
     if client.collection_exists(COLLECTION_NAME):
-        print(f"ℹ️ Коллекция '{COLLECTION_NAME}' уже существует")
+        logger.info(f"ℹ️ Коллекция '{COLLECTION_NAME}' уже существует")
         return
 
     client.create_collection(
@@ -46,7 +55,6 @@ def create_document_collection() -> None:
         )
     )
 
-    # Индексы payload (если нужны)
     client.create_payload_index(
         collection_name=COLLECTION_NAME,
         field_name="customer",
@@ -59,7 +67,7 @@ def create_document_collection() -> None:
         field_schema=models.PayloadSchemaType.KEYWORD
     )
 
-    print(f"✅ Коллекция '{COLLECTION_NAME}' создана")
+    logger.info(f"Коллекция '{COLLECTION_NAME}' создана")
 
 
 # ===============================
@@ -94,7 +102,7 @@ def create_embeddings_from_chunks(
     model: str = OLLAMA_MODEL
 ) -> List[models.PointStruct]:
     """
-    Создаёт PointStruct'ы для Qdrant.
+    Создает PointStruct'ы для Qdrant.
     """
     points: List[models.PointStruct] = []
 
@@ -127,7 +135,7 @@ def add_chunks_to_qdrant(
     Возвращает количество добавленных точек.
     """
     if not chunks:
-        print("⚠️ Нет чанков для загрузки в Qdrant")
+        logger.info("Нет чанков для загрузки в Qdrant")
         return 0
 
     points = create_embeddings_from_chunks(chunks, model)
@@ -137,7 +145,7 @@ def add_chunks_to_qdrant(
         points=points
     )
 
-    print(f"✅ Загружено {len(points)} чанков в Qdrant")
+    logger.info(f"Загружено {len(points)} чанков в Qdrant")
     return len(points)
 
 
@@ -170,3 +178,33 @@ def reserch_similar_chunks(
         }
         for point in search_result
     ]
+
+
+def reserch_file_name(
+    query_file_name: str,
+) -> bool:
+    """
+    Поиск идентичных чанков по названию.
+    """
+    try:
+        normalized_name = query_file_name.lower()
+        search_result = client.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=models.Filter(
+                must=[models.FieldCondition(
+                    key="metadata.file_name",
+                    match=models.MatchValue(value=normalized_name)
+                    )
+                ]
+            ),
+            limit=1,
+            with_payload=True,
+            with_vectors=False
+        )
+
+        points, _ = search_result
+
+        return len(points) > 0
+    except Exception as e:
+        logger.info(f"Ошибка при поиске чанков: {e}")
+        return False
