@@ -87,7 +87,7 @@ class DOCParser(BaseParser):
                                 errors='ignore',
                                 timeout=30,
                                 cwd=str(anti_dir),
-                                shell=True  # Важно для Windows!
+                                shell=True
                             )
                             
                             if proc.returncode == 0 and proc.stdout and proc.stdout.strip():
@@ -263,15 +263,10 @@ class DOCParser(BaseParser):
             return antiword
 
         # Проверяем стандартные пути
-        candidates = [
-            r"C:\antiword\antiword.exe",
-            r"C:\Program Files\antiword\antiword.exe",
-            r"C:\Program Files (x86)\antiword\antiword.exe",
-        ]
+        candidates = r"C:\Program Files\antiword\antiword.exe"
         
-        for p in candidates:
-            if os.path.exists(p):
-                return p
+        if os.path.exists(candidates):
+            return candidates
         
         return None
 
