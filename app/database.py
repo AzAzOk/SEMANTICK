@@ -44,7 +44,7 @@ def create_document_collection() -> None:
     Создаёт коллекцию, если она не существует.
     """
     if client.collection_exists(COLLECTION_NAME):
-        logger.info(f"ℹ️ Коллекция '{COLLECTION_NAME}' уже существует")
+        logger.info(f"ℹКоллекция '{COLLECTION_NAME}' уже существует")
         return
 
     client.create_collection(

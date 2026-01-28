@@ -1,6 +1,5 @@
 from typing import List
 from docx import Document
-import os
 from .super_class import BaseParser, ParserResult
 from loguru import logger
 
