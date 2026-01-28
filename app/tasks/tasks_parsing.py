@@ -176,6 +176,9 @@ def generate_embedding(self, filename: str, onlyfile: bool = False):
         if result_parser is None:
             raise ValueError(f"Ошибка парсинга файла {filename}")
         
+        if len(result_parser.text) == 0:
+            raise ValueError(f"Ошибка файл {filename} пустой")
+        
         text_length = len(result_parser.text)
         print(f"[{worker_name}] Парсинг завершен: {text_length} символов")
 
