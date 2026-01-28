@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="ru" class="semantic-page">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Семантический поиск</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/semantic.css">
+    <link rel="icon" href="/ico/star-16.ico">
+
+</head>
+<body class="semantic-page">
+    <div class="container">
+        <header>
+            <div class="header-contentS">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <h1>Семантический поиск</h1>
+            </div>
+        </header>
+    </div>
+    
+    <div class="output-container">
+        <div id="folderOutputS">
+            <!-- Результаты будут добавляться здесь динамически -->
+        </div>
+    </div>
+
+    <div class="input-container">
+        <input type="text" id="textInput" class="text-input" placeholder="Введите текст для поиска">
+    </div>
+    
+    <script>
+        (function() {
+            'use strict';
+            
+            const input = document.getElementById('textInput');
+            const output = document.getElementById('folderOutputS');
+            
+            const typingIndicator = createTypingIndicator();
+            
+            input.focus();
+            
+            function createTypingIndicator() {
+                const indicator = document.createElement('div');
+                indicator.className = 'typing-indicator';
+                indicator.innerHTML = `
+                    <div>Система ищет ответ<span class="typing-dots"><span>.</span><span>.</span><span>.</span></span></div>
+                `;
+                return indicator;
+            }
+            
+            function addUserMessage(text) {
+                const msgDiv = document.createElement('div');
+                msgDiv.className = 'user-message';
+                
+                const timestamp = getTimestamp();
+                msgDiv.innerHTML = `
+                    <div>${escapeHtml(text)}</div>
+                    <div class="message-timestamp">[${timestamp}]</div>
+                `;
+                
+                output.appendChild(msgDiv);
+                scrollToBottom();
+            }
+            
+            function displaySearchResults(results, totalCount, message) {
+                const containerDiv = document.createElement('div');
+                containerDiv.className = 'results-container';
+                
+                results.forEach((result, index) => {
+                    const card = createResultCard(result, index);
+                    containerDiv.appendChild(card);
+                });
+                
+                const timestamp = getTimestamp();
+                const timestampDiv = document.createElement('div');
+                timestampDiv.className = 'message-timestamp';
+                timestampDiv.textContent = `[${timestamp}] ${message}`;
+                containerDiv.appendChild(timestampDiv);
+                
+                output.appendChild(containerDiv);
+                scrollToBottom();
+            }
+            
+            function createResultCard(result, index) {
+                const card = document.createElement('div');
+                card.className = 'result-card';
+                card.id = `result-card-${index}`;
+                const header = document.createElement('div');
+                header.className = 'result-header';
+                header.innerHTML = `
+                    <span class="result-rank">РЕЗУЛЬТАТ #${result.rank}</span>
+                    <span class="result-score">${result.score.toFixed(1)}%</span>
+                `;
+                card.appendChild(header);
+                
+                const meta = document.createElement('div');
+                meta.className = 'result-meta';
+                meta.innerHTML = `
+                    <div class="result-meta-item">
+                        <span class="result-meta-label">Файл:</span>
+                        <span class="result-meta-value">${escapeHtml(result.file_name)}</span>
+                    </div>
+                    <div class="result-meta-item">
+                        <span class="result-meta-label"> Путь:</span>
+                        <span class="result-meta-value">${escapeHtml(result.file_path)}</span>
+                    </div>
+                `;
+                card.appendChild(meta);
+                
+                const textContainer = document.createElement('div');
+                textContainer.className = 'result-text-container';
+                
+                const textLabel = document.createElement('span');
+                textLabel.className = 'result-text-label';
+                textLabel.textContent = 'ТЕКСТ:';
+                textContainer.appendChild(textLabel);
+                
+                const preview = document.createElement('div');
+                preview.className = 'result-text-preview';
+                const shortText = result.text.length > 150 
+                    ? result.text.substring(0, 150) + '...' 
+                    : result.text;
+                preview.textContent = shortText;
+                textContainer.appendChild(preview);
+                
+                const fullText = document.createElement('div');
+                fullText.className = 'result-text';
+                fullText.id = `text-${index}`;
+                fullText.textContent = result.text;
+                textContainer.appendChild(fullText);
+                
+                const toggleBtn = document.createElement('button');
+                toggleBtn.className = 'toggle-text-btn';
+                toggleBtn.textContent = '▼ Показать полный текст';
+                toggleBtn.onclick = function() {
+                    toggleText(index, toggleBtn, fullText, preview);
+                };
+                textContainer.appendChild(toggleBtn);
+                
+                card.appendChild(textContainer);
+                
+                return card;
+            }
+            
+            function toggleText(index, button, fullTextDiv, previewDiv) {
+                const isExpanded = fullTextDiv.classList.contains('expanded');
+                
+                if (isExpanded) {
+                    fullTextDiv.classList.remove('expanded');
+                    previewDiv.style.display = 'block';
+                    button.textContent = '▼ Показать полный текст';
+                } else {
+                    fullTextDiv.classList.add('expanded');
+                    previewDiv.style.display = 'none';
+                    button.textContent = '▲ Скрыть текст';
+                }
+            }
+            
+            function showError(message) {
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'error-message';
+                
+                const timestamp = getTimestamp();
+                errorDiv.innerHTML = `
+                    <div>${escapeHtml(message)}</div>
+                    <div class="message-timestamp">[${timestamp}]</div>
+                `;
+                
+                output.appendChild(errorDiv);
+                scrollToBottom();
+            }
+            
+            async function sendMessageToServer(text) {
+                try {
+                    if (!typingIndicator.parentNode) {
+                        output.appendChild(typingIndicator);
+                    }
+                    typingIndicator.style.display = 'block';
+                    scrollToBottom();
+                    
+                    console.log('Отправка запроса:', text);
+                    
+                    const response = await fetch('/message', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ text: text })
+                    });
+                    
+                    typingIndicator.style.display = 'none';
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({ 
+                            detail: 'Неизвестная ошибка' 
+                        }));
+                        throw new Error(errorData.detail || `Ошибка сервера: ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    console.log('Получен ответ:', data);
+                    
+                    if (data.status === 'error') {
+                        showError(data.message || 'Произошла ошибка');
+                    } else if (data.status === 'no_results') {
+                        showError(data.message || 'По вашему запросу ничего не найдено');
+                    } else if (data.status === 'success' && data.results && data.results.length > 0) {
+                        displaySearchResults(data.results, data.count, data.message);
+                    } else {
+                        showError('Получен пустой ответ от сервера');
+                    }
+                    
+                } catch (error) {
+                    console.error('Ошибка отправки сообщения:', error);
+                    typingIndicator.style.display = 'none';
+                    showError(`Ошибка соединения с сервером: ${error.message}`);
+                }
+            }
+            
+            input.addEventListener('keydown', async function(e) {
+                if (e.key === 'Enter' && input.value.trim() !== '') {
+                    const userText = input.value.trim();
+                    addUserMessage(userText);
+                    input.value = '';
+                    await sendMessageToServer(userText);
+                    
+                    input.focus();
+                }
+            });
+            
+            function escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+            
+            function getTimestamp() {
+                return new Date().toLocaleTimeString('ru-RU', { 
+                    hour: '2-digit', 
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+            }
+            
+            function scrollToBottom() {
+                output.scrollTop = output.scrollHeight;
+            }
+            
+
+            document.addEventListener('click', function(e) {
+                if (!e.target.closest('.toggle-text-btn')) {
+                    input.focus();
+                }
+            });
+            
+        })();
+    </script>
+</body>
+</html>
