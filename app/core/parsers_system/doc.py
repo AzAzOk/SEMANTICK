@@ -28,18 +28,11 @@ class DOCParser(BaseParser):
         temp_dir = tempfile.gettempdir()
 
         try:
-            # ПОПЫТКА 1: Используем python-пакет antiword (если установлен)
             if self.has_antiword_python:
                 try:
                     import antiword
                     logger.info(f"Используем python-пакет antiword для {file_path}")
-                    
-                    # Читаем файл как бинарный
-                    with open(file_path, 'rb') as f:
-                        content = f.read()
-                    
-                    # Используем antiword для парсинга
-                    text = antiword.reader.read(content)
+                    text = antiword.antiword(file_path)
                     
                     if text and text.strip():
                         logger.success(f"Успешно распарсено с antiword: {len(text)} символов")
@@ -115,7 +108,7 @@ class DOCParser(BaseParser):
                 except Exception as e:
                     logger.warning(f"Ошибка при запуске antiword.exe: {e}")
 
-            # ПОПЫТКА 3: LibreOffice (soffice) конвертация
+            # # ПОПЫТКА 3: LibreOffice (soffice) конвертация
             soffice = self._find_soffice()
             if soffice:
                 logger.info(f"Пробуем LibreOffice: {soffice}")
@@ -128,16 +121,14 @@ class DOCParser(BaseParser):
                         [soffice, "--headless", "--convert-to", "docx", "--outdir", out_dir, file_path],
                         capture_output=True,
                         text=True,
-                        timeout=120,  # Увеличиваем таймаут
+                        timeout=120,
                         shell=True
                     )
 
-                    # Ищем созданный файл
                     base_name = Path(file_path).stem
                     candidate = os.path.join(out_dir, f"{base_name}.docx")
                     
                     if not os.path.exists(candidate):
-                        # Может быть другое имя
                         for f in os.listdir(out_dir):
                             if f.endswith('.docx'):
                                 candidate = os.path.join(out_dir, f)
@@ -248,7 +239,6 @@ class DOCParser(BaseParser):
             )
 
         finally:
-            # Удаляем временные файлы
             try:
                 if temp_docx and os.path.exists(temp_docx):
                     os.unlink(temp_docx)
@@ -257,12 +247,10 @@ class DOCParser(BaseParser):
 
     def _find_antiword_exe(self) -> str:
         """Ищет бинарный файл antiword.exe"""
-        # Проверяем PATH
         antiword = shutil.which('antiword')
         if antiword:
             return antiword
 
-        # Проверяем стандартные пути
         candidates = r"C:\Program Files\antiword\antiword.exe"
         
         if os.path.exists(candidates):

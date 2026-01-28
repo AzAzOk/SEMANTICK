@@ -24,12 +24,10 @@ class PDFParser(BaseParser):
         start_time = time.time()
         
         try:
-            # Извлекаем параметры
             use_ocr = params.get('use_ocr', self.use_ocr)
             ocr_language = params.get('ocr_language', self.ocr_language)
             pages = params.get('pages', None)
-            
-            # Выбираем метод парсинга
+
             if use_ocr:
                 text, metadata = self._extract_with_ocr(file_path, pages, ocr_language)
                 method = "ocr"
@@ -37,10 +35,8 @@ class PDFParser(BaseParser):
                 text, metadata = self._extract_with_pymupdf(file_path, pages)
                 method = "text_extraction"
             
-            # Извлекаем метаданные
             pdf_metadata = self._extract_pdf_metadata(file_path)
             
-            # Формируем итоговые метаданные
             final_metadata = {
                 'parser': 'PDFParser',
                 'method': method,
