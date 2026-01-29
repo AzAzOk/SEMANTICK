@@ -1,4 +1,3 @@
-# services/api-gateway/app/api/websocket.py
 """
 WebSocket Manager для real-time обновлений статуса задач
 """
@@ -87,126 +86,126 @@ manager = ConnectionManager()
 # BACKGROUND TASK MONITORING
 # ==========================================
 
-async def monitor_task_status(task_id: str, celery_app):
-    """Фоновый мониторинг статуса задачи и отправка обновлений через WebSocket"""
+# async def monitor_task_status(task_id: str, celery_app):
+#     """Фоновый мониторинг статуса задачи и отправка обновлений через WebSocket"""
     
-    async def normalize_error(raw) -> dict:
-        """Нормализация ошибок для единообразного формата"""
-        if isinstance(raw, dict) and 'exc_type' in raw:
-            return {'type': raw['exc_type'],
-                    'message': str(raw.get('exc_message') or raw.get('exc_args', ''))}
-        if isinstance(raw, dict) and 'type' in raw:
-            return raw
-        if isinstance(raw, BaseException):
-            return {'type': type(raw).__name__, 'message': str(raw)}
-        return {'type': 'Exception',
-                'message': str(raw) if raw else 'Unknown error'}
+#     async def normalize_error(raw) -> dict:
+#         """Нормализация ошибок для единообразного формата"""
+#         if isinstance(raw, dict) and 'exc_type' in raw:
+#             return {'type': raw['exc_type'],
+#                     'message': str(raw.get('exc_message') or raw.get('exc_args', ''))}
+#         if isinstance(raw, dict) and 'type' in raw:
+#             return raw
+#         if isinstance(raw, BaseException):
+#             return {'type': type(raw).__name__, 'message': str(raw)}
+#         return {'type': 'Exception',
+#                 'message': str(raw) if raw else 'Unknown error'}
     
-    try:
-        while True:
-            task = celery_app.AsyncResult(task_id)
-            state = task.state
+#     try:
+#         while True:
+#             task = celery_app.AsyncResult(task_id)
+#             state = task.state
             
-            data = {"task_id": task_id, "type": "task_update"}
+#             data = {"task_id": task_id, "type": "task_update"}
             
-            if state == 'PENDING':
-                data.update({
-                    "status": "pending",
-                    "progress": 0,
-                    "message": "Задача в очереди..."
-                })
-            elif state == 'PROGRESS':
-                info = task.info or {}
-                data.update({
-                    "status": "processing",
-                    "progress": info.get('progress', 0),
-                    "current_step": info.get('current_step', 0),
-                    "total_steps": info.get('total_steps', 6),
-                    "message": info.get('status', 'Обработка...'),
-                    "filename": info.get('filename', '')
-                })
-            elif state == 'SUCCESS':
-                result_data = task.result or {}
-                data.update({
-                    "status": "completed",
-                    "progress": 100,
-                    "result": result_data,
-                    "message": "Обработка завершена"
-                })
-                await manager.send_task_update(task_id, data)
-                break
-            elif state == 'FAILURE':
-                info = await normalize_error(task.info or {})
-                data.update({
-                    "status": "failed",
-                    "error": info,
-                    "message": "Ошибка обработки"
-                })
-                await manager.send_task_update(task_id, data)
-                break
-            elif state == 'REVOKED':
-                data.update({
-                    "status": "cancelled",
-                    "message": "Задача отменена"
-                })
-                await manager.send_task_update(task_id, data)
-                break
+#             if state == 'PENDING':
+#                 data.update({
+#                     "status": "pending",
+#                     "progress": 0,
+#                     "message": "Задача в очереди..."
+#                 })
+#             elif state == 'PROGRESS':
+#                 info = task.info or {}
+#                 data.update({
+#                     "status": "processing",
+#                     "progress": info.get('progress', 0),
+#                     "current_step": info.get('current_step', 0),
+#                     "total_steps": info.get('total_steps', 6),
+#                     "message": info.get('status', 'Обработка...'),
+#                     "filename": info.get('filename', '')
+#                 })
+#             elif state == 'SUCCESS':
+#                 result_data = task.result or {}
+#                 data.update({
+#                     "status": "completed",
+#                     "progress": 100,
+#                     "result": result_data,
+#                     "message": "Обработка завершена"
+#                 })
+#                 await manager.send_task_update(task_id, data)
+#                 break
+#             elif state == 'FAILURE':
+#                 info = await normalize_error(task.info or {})
+#                 data.update({
+#                     "status": "failed",
+#                     "error": info,
+#                     "message": "Ошибка обработки"
+#                 })
+#                 await manager.send_task_update(task_id, data)
+#                 break
+#             elif state == 'REVOKED':
+#                 data.update({
+#                     "status": "cancelled",
+#                     "message": "Задача отменена"
+#                 })
+#                 await manager.send_task_update(task_id, data)
+#                 break
             
-            await manager.send_task_update(task_id, data)
-            await asyncio.sleep(1)
+#             await manager.send_task_update(task_id, data)
+#             await asyncio.sleep(1)
             
-    except Exception as e:
-        logger.error(f"Ошибка мониторинга задачи {task_id}: {e}")
+#     except Exception as e:
+#         logger.error(f"Ошибка мониторинга задачи {task_id}: {e}")
 
 
 # ==========================================
 # WEBSOCKET ENDPOINT
 # ==========================================
 
-async def websocket_endpoint(websocket: WebSocket, client_id: str, celery_app):
-    """
-    WebSocket endpoint для real-time обновлений статуса задач
+# async def websocket_endpoint(websocket: WebSocket, client_id: str, celery_app):
+#     """
+#     WebSocket endpoint для real-time обновлений статуса задач
     
-    ВАЖНО: Это функция-обработчик, а не декоратор!
-    Используется в main.py как:
+#     ВАЖНО: Это функция-обработчик, а не декоратор!
+#     Используется в main.py как:
     
-    @app.websocket("/ws/{client_id}")
-    async def ws_handler(websocket: WebSocket, client_id: str):
-        await websocket_endpoint(websocket, client_id, celery_app)
-    """
-    await manager.connect(websocket, client_id)
+#     @app.websocket("/ws/{client_id}")
+#     async def ws_handler(websocket: WebSocket, client_id: str):
+#         await websocket_endpoint(websocket, client_id, celery_app)
+#     """
+#     await manager.connect(websocket, client_id)
     
-    try:
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
+#     try:
+#         while True:
+#             data = await websocket.receive_text()
+#             message = json.loads(data)
             
-            if message.get("type") == "subscribe":
-                task_id = message.get("task_id")
-                if task_id:
-                    manager.subscribe_to_task(client_id, task_id)
-                    asyncio.create_task(monitor_task_status(task_id, celery_app))
-                    await websocket.send_json({
-                        "type": "subscribed",
-                        "task_id": task_id,
-                        "message": f"Подписка на задачу {task_id} активна"
-                    })
+#             if message.get("type") == "subscribe":
+#                 task_id = message.get("task_id")
+#                 if task_id:
+#                     manager.subscribe_to_task(client_id, task_id)
+#                     asyncio.create_task(monitor_task_status(task_id, celery_app))
+#                     await websocket.send_json({
+#                         "type": "subscribed",
+#                         "task_id": task_id,
+#                         "message": f"Подписка на задачу {task_id} активна"
+#                     })
             
-            elif message.get("type") == "unsubscribe":
-                task_id = message.get("task_id")
-                if task_id:
-                    manager.unsubscribe_from_task(client_id, task_id)
-                    await websocket.send_json({
-                        "type": "unsubscribed",
-                        "task_id": task_id
-                    })
+#             elif message.get("type") == "unsubscribe":
+#                 task_id = message.get("task_id")
+#                 if task_id:
+#                     manager.unsubscribe_from_task(client_id, task_id)
+#                     await websocket.send_json({
+#                         "type": "unsubscribed",
+#                         "task_id": task_id
+#                     })
             
-            elif message.get("type") == "ping":
-                await websocket.send_json({"type": "pong"})
+#             elif message.get("type") == "ping":
+#                 await websocket.send_json({"type": "pong"})
                 
-    except WebSocketDisconnect:
-        manager.disconnect(client_id)
-        logger.info(f"WebSocket клиент {client_id} отключен")
-    except Exception as e:
-        logger.error(f"WebSocket ошибка для клиента {client_id}: {e}")
-        manager.disconnect(client_id)
+#     except WebSocketDisconnect:
+#         manager.disconnect(client_id)
+#         logger.info(f"WebSocket клиент {client_id} отключен")
+#     except Exception as e:
+#         logger.error(f"WebSocket ошибка для клиента {client_id}: {e}")
+#         manager.disconnect(client_id)

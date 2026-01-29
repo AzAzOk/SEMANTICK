@@ -27,21 +27,21 @@ class SearchRequest(BaseModel):
 # HELPER FUNCTIONS
 # ==========================================
 
-async def cleanup_tasks_and_files(task_ids: List[str], file_paths: List[str], celery_app):
-    """Отмена задач Celery и удаление файлов"""
-    for t in task_ids:
-        try:
-            celery_app.control.revoke(t, terminate=True, signal='SIGKILL')
-        except Exception as e:
-            logger.warning(f"Ошибка отмены задачи {t}: {str(e)}")
-    for f in file_paths:
-        try:
-            Path(f).unlink()
-            logger.info(f"Удалён файл: {f}")
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            logger.warning(f"Ошибка удаления файла {f}: {str(e)}")
+# async def cleanup_tasks_and_files(task_ids: List[str], file_paths: List[str], celery_app):
+#     """Отмена задач Celery и удаление файлов"""
+#     for t in task_ids:
+#         try:
+#             celery_app.control.revoke(t, terminate=True, signal='SIGKILL')
+#         except Exception as e:
+#             logger.warning(f"Ошибка отмены задачи {t}: {str(e)}")
+#     for f in file_paths:
+#         try:
+#             Path(f).unlink()
+#             logger.info(f"Удалён файл: {f}")
+#         except FileNotFoundError:
+#             pass
+#         except Exception as e:
+#             logger.warning(f"Ошибка удаления файла {f}: {str(e)}")
 
 
 async def normalize_error(raw) -> dict:
@@ -132,7 +132,7 @@ def add_middleware(app: FastAPI):
 # ROUTES REGISTRATION
 # ==========================================
 
-def create_routes(app: FastAPI, celery_app, search_service_client, document_processor_client):
+def create_routes(app: FastAPI, search_service_client, document_processor_client): # def create_routes(app: FastAPI, celery_app, search_service_client, document_processor_client):
     """
     Регистрация всех HTTP routes в FastAPI приложении
     
@@ -182,63 +182,63 @@ def create_routes(app: FastAPI, celery_app, search_service_client, document_proc
     # TASK MANAGEMENT
     # ==========================================
 
-    @app.delete("/task-cancel/{task_id}")
-    async def cancel_task(task_id: str):
-        """Отмена задачи Celery по ID"""
-        try:
-            celery_app.control.revoke(task_id, terminate=True, signal='SIGKILL')
-            logger.info(f"Task {task_id} cancelled")
+    # @app.delete("/task-cancel/{task_id}")
+    # async def cancel_task(task_id: str):
+    #     """Отмена задачи Celery по ID"""
+    #     try:
+    #         celery_app.control.revoke(task_id, terminate=True, signal='SIGKILL')
+    #         logger.info(f"Task {task_id} cancelled")
             
-            await ws_manager.send_task_update(task_id, {
-                "task_id": task_id,
-                "type": "task_update",
-                "status": "cancelled",
-                "message": "Задача отменена пользователем"
-            })
+    #         await ws_manager.send_task_update(task_id, {
+    #             "task_id": task_id,
+    #             "type": "task_update",
+    #             "status": "cancelled",
+    #             "message": "Задача отменена пользователем"
+    #         })
             
-            return {"status": "cancelled", "task_id": task_id, "message": "Задача отменена"}
-        except Exception as e:
-            logger.exception(f"Ошибка отмены задачи {task_id}")
-            raise HTTPException(status_code=500, detail=f"Ошибка отмены: {str(e)}")
+    #         return {"status": "cancelled", "task_id": task_id, "message": "Задача отменена"}
+    #     except Exception as e:
+    #         logger.exception(f"Ошибка отмены задачи {task_id}")
+    #         raise HTTPException(status_code=500, detail=f"Ошибка отмены: {str(e)}")
 
-    @app.post("/tasks-cancel-batch")
-    async def cancel_tasks_batch(task_ids: List[str]):
-        """Пакетная отмена задач"""
-        cancelled, errors = [], []
-        for task_id in task_ids:
-            try:
-                celery_app.control.revoke(task_id, terminate=True, signal='SIGKILL')
-                cancelled.append(task_id)
-                logger.info(f"Задача {task_id} отменена")
+    # @app.post("/tasks-cancel-batch")
+    # async def cancel_tasks_batch(task_ids: List[str]):
+    #     """Пакетная отмена задач"""
+    #     cancelled, errors = [], []
+    #     for task_id in task_ids:
+    #         try:
+    #             celery_app.control.revoke(task_id, terminate=True, signal='SIGKILL')
+    #             cancelled.append(task_id)
+    #             logger.info(f"Задача {task_id} отменена")
                 
-                await ws_manager.send_task_update(task_id, {
-                    "task_id": task_id,
-                    "type": "task_update",
-                    "status": "cancelled",
-                    "message": "Задача отменена пользователем"
-                })
-            except Exception as e:
-                errors.append({"task_id": task_id, "error": str(e)})
-                logger.warning(f"Ошибка отмены {task_id}: {str(e)}")
-        return {
-            "status": "completed",
-            "cancelled": cancelled,
-            "cancelled_count": len(cancelled),
-            "errors": errors,
-            "errors_count": len(errors)
-        }
+    #             await ws_manager.send_task_update(task_id, {
+    #                 "task_id": task_id,
+    #                 "type": "task_update",
+    #                 "status": "cancelled",
+    #                 "message": "Задача отменена пользователем"
+    #             })
+    #         except Exception as e:
+    #             errors.append({"task_id": task_id, "error": str(e)})
+    #             logger.warning(f"Ошибка отмены {task_id}: {str(e)}")
+    #     return {
+    #         "status": "completed",
+    #         "cancelled": cancelled,
+    #         "cancelled_count": len(cancelled),
+    #         "errors": errors,
+    #         "errors_count": len(errors)
+    #     }
 
-    @app.get("/tasks/active")
-    async def get_active_tasks():
-        """Получение списка активных задач"""
-        inspect = celery_app.control.inspect()
-        active_tasks = inspect.active() or {}
-        tasks_list = [
-            {"task_id": t.get('id'), "name": t.get('name'), "worker": worker}
-            for worker, tasks in active_tasks.items() if tasks
-            for t in tasks
-        ]
-        return {"active_tasks": tasks_list, "count": len(tasks_list)}
+    # @app.get("/tasks/active")
+    # async def get_active_tasks():
+    #     """Получение списка активных задач"""
+    #     inspect = celery_app.control.inspect()
+    #     active_tasks = inspect.active() or {}
+    #     tasks_list = [
+    #         {"task_id": t.get('id'), "name": t.get('name'), "worker": worker}
+    #         for worker, tasks in active_tasks.items() if tasks
+    #         for t in tasks
+    #     ]
+    #     return {"active_tasks": tasks_list, "count": len(tasks_list)}
 
     # ==========================================
     # FILE UPLOAD
@@ -342,60 +342,60 @@ def create_routes(app: FastAPI, celery_app, search_service_client, document_proc
     # LEGACY TASK STATUS (HTTP polling fallback)
     # ==========================================
 
-    @app.get("/task-status/{task_id}")
-    async def get_task_status(task_id: str):
-        """Проверка статуса задачи по ID - legacy endpoint для обратной совместимости"""
-        try:
-            task = celery_app.AsyncResult(task_id)
-            state = task.state
+    # @app.get("/task-status/{task_id}")
+    # async def get_task_status(task_id: str):
+    #     """Проверка статуса задачи по ID - legacy endpoint для обратной совместимости"""
+    #     try:
+    #         task = celery_app.AsyncResult(task_id)
+    #         state = task.state
 
-            if state == 'PENDING':
-                return {
-                    "task_id": task_id, 
-                    "status": "pending", 
-                    "progress": 0, 
-                    "current_step": 1, 
-                    "total_steps": 6, 
-                    "message": "Задача в очереди..."
-                }
-            elif state == 'PROGRESS':
-                info = task.info or {}
-                return {
-                    "task_id": task_id,
-                    "status": "processing",
-                    "progress": info.get('progress', 0),
-                    "current_step": info.get('current_step', 0),
-                    "total_steps": info.get('total_steps', 6),
-                    "message": info.get('status', 'Обработка...'),
-                    "filename": info.get('filename', '')
-                }
-            elif state == 'SUCCESS':
-                result_data = task.result or {}
-                return {
-                    "task_id": task_id,
-                    "status": "completed",
-                    "progress": 100,
-                    "current_step": 6,
-                    "total_steps": 6,
-                    "result": result_data,
-                    "message": "Обработка завершена"
-                }
-            elif state == 'FAILURE':
-                error_info = await normalize_error(task.info or {})
-                return {"task_id": task_id, "state": "FAILURE", "error": error_info}
-            else:
-                return {
-                    "task_id": task_id, 
-                    "status": state.lower(), 
-                    "message": str(task.info)
-                }
+    #         if state == 'PENDING':
+    #             return {
+    #                 "task_id": task_id, 
+    #                 "status": "pending", 
+    #                 "progress": 0, 
+    #                 "current_step": 1, 
+    #                 "total_steps": 6, 
+    #                 "message": "Задача в очереди..."
+    #             }
+    #         elif state == 'PROGRESS':
+    #             info = task.info or {}
+    #             return {
+    #                 "task_id": task_id,
+    #                 "status": "processing",
+    #                 "progress": info.get('progress', 0),
+    #                 "current_step": info.get('current_step', 0),
+    #                 "total_steps": info.get('total_steps', 6),
+    #                 "message": info.get('status', 'Обработка...'),
+    #                 "filename": info.get('filename', '')
+    #             }
+    #         elif state == 'SUCCESS':
+    #             result_data = task.result or {}
+    #             return {
+    #                 "task_id": task_id,
+    #                 "status": "completed",
+    #                 "progress": 100,
+    #                 "current_step": 6,
+    #                 "total_steps": 6,
+    #                 "result": result_data,
+    #                 "message": "Обработка завершена"
+    #             }
+    #         elif state == 'FAILURE':
+    #             error_info = await normalize_error(task.info or {})
+    #             return {"task_id": task_id, "state": "FAILURE", "error": error_info}
+    #         else:
+    #             return {
+    #                 "task_id": task_id, 
+    #                 "status": state.lower(), 
+    #                 "message": str(task.info)
+    #             }
 
-        except Exception as e:
-            logger.exception("Ошибка получения статуса задачи")
-            return {
-                "task_id": task_id, 
-                "state": "ERROR", 
-                "error": f"Unexpected error: {str(e)}"
-            }
+    #     except Exception as e:
+    #         logger.exception("Ошибка получения статуса задачи")
+    #         return {
+    #             "task_id": task_id, 
+    #             "state": "ERROR", 
+    #             "error": f"Unexpected error: {str(e)}"
+    #         }
     
     logger.info("All routes registered")
