@@ -1,7 +1,6 @@
 # services/api-gateway/app/api/routes.py
 """
-HTTP Routes для API Gateway
-Обрабатывает загрузку файлов, семантический поиск и управление задачами
+HTTP Routes для API Gateway (без Celery)
 """
 
 from fastapi import FastAPI, UploadFile, File, Request, HTTPException
@@ -12,6 +11,11 @@ from typing import List, Optional
 from pathlib import Path
 from contextlib import asynccontextmanager
 import logging
+import uuid
+import asyncio
+from ..core.config import settings
+from ..core.rabbitmq_publisher import publisher
+from ..core.redis_client import task_status_manager
 
 logger = logging.getLogger(__name__)
 
@@ -24,73 +28,59 @@ class SearchRequest(BaseModel):
 
 
 # ==========================================
-# HELPER FUNCTIONS
-# ==========================================
-
-# async def cleanup_tasks_and_files(task_ids: List[str], file_paths: List[str], celery_app):
-#     """Отмена задач Celery и удаление файлов"""
-#     for t in task_ids:
-#         try:
-#             celery_app.control.revoke(t, terminate=True, signal='SIGKILL')
-#         except Exception as e:
-#             logger.warning(f"Ошибка отмены задачи {t}: {str(e)}")
-#     for f in file_paths:
-#         try:
-#             Path(f).unlink()
-#             logger.info(f"Удалён файл: {f}")
-#         except FileNotFoundError:
-#             pass
-#         except Exception as e:
-#             logger.warning(f"Ошибка удаления файла {f}: {str(e)}")
-
-
-async def normalize_error(raw) -> dict:
-    """Нормализация ошибок для единообразного формата"""
-    if isinstance(raw, dict) and 'exc_type' in raw:
-        return {'type': raw['exc_type'],
-                'message': str(raw.get('exc_message') or raw.get('exc_args', ''))}
-    if isinstance(raw, dict) and 'type' in raw:
-        return raw
-    if isinstance(raw, BaseException):
-        return {'type': type(raw).__name__, 'message': str(raw)}
-    return {'type': 'Exception',
-            'message': str(raw) if raw else 'Unknown error'}
-
-
-# ==========================================
 # LIFESPAN MANAGEMENT
 # ==========================================
 
 def create_lifespan(search_service_client):
-    """
-    Создание lifespan context manager для FastAPI
+    """Создание lifespan context manager для FastAPI"""
     
-    Args:
-        search_service_client: HTTP клиент для Search Service
-    """
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # Startup
-        logger.info("API Gateway startup...")
+        # ===== STARTUP =====
+        logger.info("🚀 API Gateway startup...")
         
-        # TODO: Инициализация соединений с микросервисами
-        # - Проверка доступности Search Service
-        # - Проверка доступности Embedding Service
-        # - Проверка доступности Document Processor
+        # Подключение к RabbitMQ
+        try:
+            await publisher.connect()
+            logger.info("✅ RabbitMQ publisher ready")
+        except Exception as e:
+            logger.error(f"❌ Failed to connect to RabbitMQ: {e}")
+            raise
+        
+        # Подключение к Redis
+        try:
+            await task_status_manager.connect()
+            logger.info("✅ Redis task manager ready")
+        except Exception as e:
+            logger.error(f"❌ Failed to connect to Redis: {e}")
+            raise
         
         logger.info("✅ API Gateway startup completed")
         
         yield
         
-        # Shutdown
-        logger.info("🛑 API Gateway shutdown")
+        # ===== SHUTDOWN =====
+        logger.info("🛑 API Gateway shutdown...")
+        
+        # Закрытие RabbitMQ
+        try:
+            await publisher.close()
+        except Exception as e:
+            logger.error(f"Error closing RabbitMQ: {e}")
+        
+        # Закрытие Redis
+        try:
+            await task_status_manager.close()
+        except Exception as e:
+            logger.error(f"Error closing Redis: {e}")
         
         # Закрытие HTTP клиентов
         try:
             await search_service_client.close()
-            logger.info("Search service client closed")
         except Exception as e:
             logger.error(f"Error closing search service client: {e}")
+        
+        logger.info("🛑 API Gateway shutdown completed")
     
     return lifespan
 
@@ -105,16 +95,15 @@ def add_middleware(app: FastAPI):
     # CORS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # В production указать конкретные origins
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
     
-    # Middleware для оптимизации соединений
+    # Connection optimization
     @app.middleware("http")
     async def optimize_connection_headers(request, call_next):
-        """Оптимизированные заголовки для HTTP соединений"""
         response = await call_next(request)
         
         if request.url.path.startswith("/ws") or request.url.path.startswith("/task-status"):
@@ -125,26 +114,15 @@ def add_middleware(app: FastAPI):
         
         return response
     
-    logger.info("Middleware added")
+    logger.info("✅ Middleware configured")
 
 
 # ==========================================
 # ROUTES REGISTRATION
 # ==========================================
 
-def create_routes(app: FastAPI, search_service_client, document_processor_client): # def create_routes(app: FastAPI, celery_app, search_service_client, document_processor_client):
-    """
-    Регистрация всех HTTP routes в FastAPI приложении
-    
-    Args:
-        app: FastAPI приложение
-        celery_app: Celery приложение для управления задачами
-        search_service_client: Клиент для обращения к Search Service
-        document_processor_client: Клиент для обращения к Document Processor
-    """
-    
-    # Импортируем WebSocket manager для отправки обновлений
-    from .websocket import manager as ws_manager
+def create_routes(app: FastAPI, search_service_client, document_processor_client):
+    """Регистрация всех HTTP routes"""
     
     # ==========================================
     # STATIC PAGES
@@ -153,114 +131,98 @@ def create_routes(app: FastAPI, search_service_client, document_processor_client
     @app.get("/")
     async def root():
         return {
-            "message": "Semantic Search API",
-            "endpoints": [
-                "/index - Main page",
-                "/docs - Swagger UI",
-                "/redoc - ReDoc",
-                "/tasks/active - Active tasks",
-                "/semantic - Semantic UI",
-                "/ws/{client_id} - WebSocket connection"
-            ]
+            "service": "API Gateway",
+            "version": "2.0.0",
+            "status": "running",
+            "endpoints": {
+                "pages": ["/index", "/semantic"],
+                "docs": ["/docs", "/redoc"],
+                "api": ["/search", "/upload", "/tasks"],
+                "websocket": "/ws/{client_id}"
+            }
         }
 
     @app.get("/semantic", response_class=HTMLResponse)
     async def semantic_page():
         path = Path("app/templates/semantic.html")
         if not path.exists():
-            raise HTTPException(status_code=404, detail="File not found")
+            raise HTTPException(status_code=404, detail="Template not found")
         return path.read_text(encoding="utf-8")
 
     @app.get("/index", response_class=HTMLResponse)
     async def index_page():
         path = Path("app/templates/index.html")
         if not path.exists():
-            raise HTTPException(status_code=404, detail="File not found")
+            raise HTTPException(status_code=404, detail="Template not found")
         return path.read_text(encoding="utf-8")
 
     # ==========================================
-    # TASK MANAGEMENT
-    # ==========================================
-
-    # @app.delete("/task-cancel/{task_id}")
-    # async def cancel_task(task_id: str):
-    #     """Отмена задачи Celery по ID"""
-    #     try:
-    #         celery_app.control.revoke(task_id, terminate=True, signal='SIGKILL')
-    #         logger.info(f"Task {task_id} cancelled")
-            
-    #         await ws_manager.send_task_update(task_id, {
-    #             "task_id": task_id,
-    #             "type": "task_update",
-    #             "status": "cancelled",
-    #             "message": "Задача отменена пользователем"
-    #         })
-            
-    #         return {"status": "cancelled", "task_id": task_id, "message": "Задача отменена"}
-    #     except Exception as e:
-    #         logger.exception(f"Ошибка отмены задачи {task_id}")
-    #         raise HTTPException(status_code=500, detail=f"Ошибка отмены: {str(e)}")
-
-    # @app.post("/tasks-cancel-batch")
-    # async def cancel_tasks_batch(task_ids: List[str]):
-    #     """Пакетная отмена задач"""
-    #     cancelled, errors = [], []
-    #     for task_id in task_ids:
-    #         try:
-    #             celery_app.control.revoke(task_id, terminate=True, signal='SIGKILL')
-    #             cancelled.append(task_id)
-    #             logger.info(f"Задача {task_id} отменена")
-                
-    #             await ws_manager.send_task_update(task_id, {
-    #                 "task_id": task_id,
-    #                 "type": "task_update",
-    #                 "status": "cancelled",
-    #                 "message": "Задача отменена пользователем"
-    #             })
-    #         except Exception as e:
-    #             errors.append({"task_id": task_id, "error": str(e)})
-    #             logger.warning(f"Ошибка отмены {task_id}: {str(e)}")
-    #     return {
-    #         "status": "completed",
-    #         "cancelled": cancelled,
-    #         "cancelled_count": len(cancelled),
-    #         "errors": errors,
-    #         "errors_count": len(errors)
-    #     }
-
-    # @app.get("/tasks/active")
-    # async def get_active_tasks():
-    #     """Получение списка активных задач"""
-    #     inspect = celery_app.control.inspect()
-    #     active_tasks = inspect.active() or {}
-    #     tasks_list = [
-    #         {"task_id": t.get('id'), "name": t.get('name'), "worker": worker}
-    #         for worker, tasks in active_tasks.items() if tasks
-    #         for t in tasks
-    #     ]
-    #     return {"active_tasks": tasks_list, "count": len(tasks_list)}
-
-    # ==========================================
-    # FILE UPLOAD
+    # FILE UPLOAD (через RabbitMQ)
     # ==========================================
 
     @app.post("/select-file")
     async def select_file(request: Request, file: List[UploadFile] = File(...)):
         """
         Загрузка отдельных файлов
-        
-        TODO: В микросервисной архитектуре здесь будет проксирование
-        к Document Processor Service через HTTP/gRPC
+        Создает задачи в Redis и публикует в RabbitMQ
         """
+        uploaded_files = []
+        task_ids = []
         
-        
-
-        # Временная заглушка - вернуть ошибку с информацией
-        raise HTTPException(
-            status_code=501,
-            detail="File upload endpoint not yet migrated to microservices. "
-                   "Please implement Document Processor service integration."
-        )
+        try:
+            # Создаем директорию для загрузок
+            uploads_dir = Path(settings.UPLOAD_DIR)
+            uploads_dir.mkdir(parents=True, exist_ok=True)
+            
+            for uploaded_file in file:
+                # Генерируем уникальный task_id
+                task_id = str(uuid.uuid4())
+                
+                # Сохраняем файл
+                file_path = uploads_dir / uploaded_file.filename
+                contents = await uploaded_file.read()
+                
+                with open(file_path, "wb") as f:
+                    f.write(contents)
+                
+                # Создаем запись в Redis
+                await task_status_manager.create_task(
+                    task_id=task_id,
+                    filename=uploaded_file.filename
+                )
+                
+                # Публикуем задачу в RabbitMQ
+                success = await publisher.publish_file_task(
+                    task_id=task_id,
+                    file_path=str(file_path),
+                    filename=uploaded_file.filename
+                )
+                
+                if not success:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to publish task for {uploaded_file.filename}"
+                    )
+                
+                uploaded_files.append({
+                    "filename": uploaded_file.filename,
+                    "size": len(contents),
+                    "task_id": task_id
+                })
+                task_ids.append(task_id)
+                
+                logger.info(f"📤 File uploaded: {uploaded_file.filename} -> task {task_id}")
+            
+            return {
+                "status": "accepted",
+                "message": f"Accepted {len(file)} file(s) for processing",
+                "files": uploaded_files,
+                "task_ids": task_ids
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ File upload error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/select-folder")
     async def select_folder(
@@ -270,16 +232,63 @@ def create_routes(app: FastAPI, search_service_client, document_processor_client
     ):
         """
         Загрузка папки с файлами
-        
-        TODO: В микросервисной архитектуре здесь будет проксирование
-        к Document Processor Service через HTTP/gRPC
+        Создает одну задачу для всей папки
         """
-        # Временная заглушка
-        raise HTTPException(
-            status_code=501,
-            detail="Folder upload endpoint not yet migrated to microservices. "
-                   "Please implement Document Processor service integration."
-        )
+        try:
+            uploads_dir = Path("uploads")
+            uploads_dir.mkdir(exist_ok=True)
+            
+            # Определяем имя папки
+            if not folder_name and file:
+                folder_name = file[0].filename.split("/")[0] if "/" in file[0].filename else "uploaded_folder"
+            
+            # Генерируем task_id для всей папки
+            task_id = str(uuid.uuid4())
+            
+            # Сохраняем все файлы
+            file_paths = []
+            for uploaded_file in file:
+                file_path = uploads_dir / uploaded_file.filename
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                contents = await uploaded_file.read()
+                with open(file_path, "wb") as f:
+                    f.write(contents)
+                
+                file_paths.append(str(file_path))
+            
+            # Создаем запись в Redis
+            await task_status_manager.create_task(
+                task_id=task_id,
+                filename=f"Folder: {folder_name} ({len(file)} files)"
+            )
+            
+            # Публикуем задачу в RabbitMQ
+            success = await publisher.publish_folder_task(
+                task_id=task_id,
+                file_paths=file_paths,
+                folder_name=folder_name
+            )
+            
+            if not success:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to publish folder task"
+                )
+            
+            logger.info(f"📤 Folder uploaded: {folder_name} ({len(file)} files) -> task {task_id}")
+            
+            return {
+                "status": "accepted",
+                "message": f"Accepted folder '{folder_name}' with {len(file)} files",
+                "folder_name": folder_name,
+                "task_id": task_id,
+                "files_count": len(file)
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Folder upload error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     # ==========================================
     # SEMANTIC SEARCH
@@ -290,23 +299,22 @@ def create_routes(app: FastAPI, search_service_client, document_processor_client
         """Поиск по семантическому запросу"""
         if not search_request.text or not search_request.text.strip():
             return {
-                "status": "error", 
-                "message": "Текст запроса не может быть пустым", 
+                "status": "error",
+                "message": "Текст запроса не может быть пустым",
                 "results": []
             }
 
         try:
-            # Вызов к Search Service через HTTP клиент
+            # Вызов Search Service через HTTP
             search_result = await search_service_client.search(search_request.text)
             
             if not search_result or not search_result.get('results'):
                 return {
-                    "status": "no_results", 
-                    "message": "По вашему запросу ничего не найдено", 
+                    "status": "no_results",
+                    "message": "По вашему запросу ничего не найдено",
                     "results": []
                 }
 
-            # Форматирование результатов
             results = search_result.get('results', [])
             top_results = results[:5]
             
@@ -331,71 +339,47 @@ def create_routes(app: FastAPI, search_service_client, document_processor_client
             }
             
         except Exception as e:
-            logger.exception("Ошибка поиска")
+            logger.exception("❌ Search error")
             return {
-                "status": "error", 
-                "message": f"Ошибка при выполнении поиска: {str(e)}", 
+                "status": "error",
+                "message": f"Ошибка при выполнении поиска: {str(e)}",
                 "results": []
             }
 
     # ==========================================
-    # LEGACY TASK STATUS (HTTP polling fallback)
+    # TASK STATUS (читаем из Redis)
     # ==========================================
 
-    # @app.get("/task-status/{task_id}")
-    # async def get_task_status(task_id: str):
-    #     """Проверка статуса задачи по ID - legacy endpoint для обратной совместимости"""
-    #     try:
-    #         task = celery_app.AsyncResult(task_id)
-    #         state = task.state
-
-    #         if state == 'PENDING':
-    #             return {
-    #                 "task_id": task_id, 
-    #                 "status": "pending", 
-    #                 "progress": 0, 
-    #                 "current_step": 1, 
-    #                 "total_steps": 6, 
-    #                 "message": "Задача в очереди..."
-    #             }
-    #         elif state == 'PROGRESS':
-    #             info = task.info or {}
-    #             return {
-    #                 "task_id": task_id,
-    #                 "status": "processing",
-    #                 "progress": info.get('progress', 0),
-    #                 "current_step": info.get('current_step', 0),
-    #                 "total_steps": info.get('total_steps', 6),
-    #                 "message": info.get('status', 'Обработка...'),
-    #                 "filename": info.get('filename', '')
-    #             }
-    #         elif state == 'SUCCESS':
-    #             result_data = task.result or {}
-    #             return {
-    #                 "task_id": task_id,
-    #                 "status": "completed",
-    #                 "progress": 100,
-    #                 "current_step": 6,
-    #                 "total_steps": 6,
-    #                 "result": result_data,
-    #                 "message": "Обработка завершена"
-    #             }
-    #         elif state == 'FAILURE':
-    #             error_info = await normalize_error(task.info or {})
-    #             return {"task_id": task_id, "state": "FAILURE", "error": error_info}
-    #         else:
-    #             return {
-    #                 "task_id": task_id, 
-    #                 "status": state.lower(), 
-    #                 "message": str(task.info)
-    #             }
-
-    #     except Exception as e:
-    #         logger.exception("Ошибка получения статуса задачи")
-    #         return {
-    #             "task_id": task_id, 
-    #             "state": "ERROR", 
-    #             "error": f"Unexpected error: {str(e)}"
-    #         }
+    @app.get("/task-status/{task_id}")
+    async def get_task_status(task_id: str):
+        """Получение статуса задачи из Redis"""
+        try:
+            status_data = await task_status_manager.get_task_status(task_id)
+            
+            if not status_data:
+                return {
+                    "task_id": task_id,
+                    "status": "not_found",
+                    "message": "Task not found or expired"
+                }
+            
+            return status_data
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting task status: {e}")
+            return {
+                "task_id": task_id,
+                "status": "error",
+                "error": str(e)
+            }
     
-    logger.info("All routes registered")
+    @app.get("/health")
+    async def health_check():
+        """Health check endpoint"""
+        return {
+            "status": "healthy",
+            "service": "api-gateway",
+            "version": "2.0.0"
+        }
+    
+    logger.info("✅ All routes registered")
