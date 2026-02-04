@@ -1,0 +1,98 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4.2-management
+    container_name: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: "appuser"
+      RABBITMQ_DEFAULT_PASS: "strongpassword"
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  api-gateway:
+    image: api-gateway:latest
+    ports:
+      - "8443:8443"
+    env_file:
+      - .env
+    depends_on:
+      - rabbitmq
+    volumes:
+      - uploads:/data/uploads
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: always
+    container_name: qdrant
+    ports:
+      - 6333:6333
+      - 6334:6334
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: always
+    container_name: ollama
+    ports:
+      - 11434:11434
+    volumes:
+      - C:\Users\kulikovMA\.ollama\models:/root/.ollama/models
+    environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - 6379:6379
+    depends_on:
+      - qdrant
+      - ollama
+    volumes:
+      - redis_data:/data
+
+  redisinsight:
+    image: redislabs/redisinsight:latest
+    container_name: redisinsight
+    restart: unless-stopped
+    ports:
+      - 8001:8001
+      - 5540:5540
+      - 9000:9000
+    depends_on:
+      - redis
+
+  document-processor:
+    image: document-processor:latest
+    container_name: document-processor
+    command: python -m app.core.rabbitmq_consumer
+    ports:
+      - "8553:8553"
+    env_file:
+      - .env
+    depends_on:
+      - rabbitmq
+    volumes:
+      - uploads:/data/uploads:ro
+
+  document-worker:
+    image: document-processor:latest
+    container_name: document-worker
+    command: celery -A app.tasks.processing:celery_app worker -Q documents.tasks --loglevel=info --concurrency=24
+    environment:
+      - CELERY_BROKER_URL=amqp://appuser:strongpassword@rabbitmq:5672//
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - rabbitmq
+      - redis
+    volumes:
+      - uploads:/data/uploads:ro
+
+volumes:
+  qdrant_data:
+  uploads:
+  ollama_data:
+  redis_data:
