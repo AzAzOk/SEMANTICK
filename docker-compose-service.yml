@@ -91,6 +91,34 @@ services:
     volumes:
       - uploads:/data/uploads:ro
 
+  embendding-processing:
+    image: embedding-processor:latest
+    container_name: embedding-processor
+    environment:
+      - CELERY_BROKER_URL=amqp://appuser:strongpassword@rabbitmq:5672//
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - rabbitmq
+      - redis
+      - ollama
+    volumes:
+      - uploads:/data/uploads:ro
+
+  embendding-worker:
+    image: embedding-processor:latest
+    container_name: embendding-worker
+    command: celery -A app.celery_app:celery_app worker -Q celery --loglevel=info
+    environment:
+      - CELERY_BROKER_URL=amqp://appuser:strongpassword@rabbitmq:5672//
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - rabbitmq
+      - redis
+      - ollama
+      - qdrant
+    volumes:
+      - uploads:/data/uploads:ro
+
 volumes:
   qdrant_data:
   uploads:
