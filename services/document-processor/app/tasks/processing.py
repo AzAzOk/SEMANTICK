@@ -3,7 +3,9 @@ from celery import Celery
 from pathlib import Path
 from ..core.chanking.text_spliter import TextSplitter
 from ..core.parsers_system import ParserManager
+from ..core.chanking import DocumentChunker, BusinessMetadata
 from ..core.config import settings
+from ..core.rabbitmq_publisher import publisher
 import json
 import logging
 import redis.asyncio as aioredis
@@ -12,10 +14,8 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# Создаем Celery app с явным именем
 celery_app = Celery(
-    'app.tasks.processing',  # Явное имя для корректной регистрации
-    broker=settings.RABBITMQ_URL,
+    'app.tasks.processing',
     backend=settings.REDIS_URL
 )
 
@@ -58,7 +58,7 @@ celery_app.conf.update(
     },
 )
 
-# Асинхронные функции для работы с Redis
+
 async def update_task_status_async(task_id: str, **updates):
     """Асинхронное обновление статуса задачи в Redis"""
     try:
@@ -77,15 +77,15 @@ async def update_task_status_async(task_id: str, **updates):
             task_data['last_updated'] = datetime.now().isoformat()
             
             await redis_client.setex(key, 3600, json.dumps(task_data))
-            logger.info(f"📝 Updated Redis task status: {task_id} - {updates.get('status', 'no status')}")
+            logger.info(f"Updated Redis task status: {task_id} - {updates.get('status', 'no status')}")
         else:
-            logger.warning(f"⚠️ Task {task_id} not found in Redis")
+            logger.warning(f"Task {task_id} not found in Redis")
         
         await redis_client.close()
         return True
         
     except Exception as e:
-        logger.error(f"❌ Failed to update Redis task status {task_id}: {e}")
+        logger.error(f"Failed to update Redis task status {task_id}: {e}")
         return False
 
 def update_task_status_sync(task_id: str, **updates):
@@ -97,7 +97,7 @@ def update_task_status_sync(task_id: str, **updates):
         loop.close()
         return result
     except Exception as e:
-        logger.error(f"❌ Sync wrapper error: {e}")
+        logger.error(f"Sync wrapper error: {e}")
         return False
 
 def _cleanup_file(filename: str, worker_name: str = "") -> None:
@@ -128,7 +128,7 @@ def generate_embedding(self, filename: str, onlyfile: bool = False, api_task_id:
     filenames = Path(filename)
     task_id = api_task_id or self.request.id
     
-    logger.info(f"🚀 [{worker_name}] Starting task {task_id} for file: {filename}")
+    logger.info(f"[{worker_name}] Starting task {task_id} for file: {filename}")
     
     # Определяем display имя файла
     dispach = filename
@@ -230,6 +230,7 @@ def generate_embedding(self, filename: str, onlyfile: bool = False, api_task_id:
         
         manager = ParserManager()
         splitter = TextSplitter()
+        data_metadata = BusinessMetadata()
         
         ext = manager._parser_extension(str(file_path))
         logger.info(f"[{worker_name}] Расширение файла: {ext}")
@@ -275,6 +276,32 @@ def generate_embedding(self, filename: str, onlyfile: bool = False, api_task_id:
                 status="processing",
                 message="Формирование метаданных документа..."
             )
+
+        metaDocument = DocumentChunker(chunks)
+        result_uniter = metaDocument.uniter(
+            result_parser.metadata,
+            str(file_path),
+            manager._file_name(str(file_path)),
+            ext,
+            data_metadata
+        )
+
+
+        async def _publish_embedding():
+            await publisher.connect()
+            await publisher.publish_embedding_task(
+                task_id=task_id,
+                file_name=filenames.name,
+                file_extension=ext,
+                chunks=result_uniter
+            )
+            await publisher.close()
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_publish_embedding())
+        loop.close()
+
         
         logger.info(f"[{worker_name}] Метаданные созданы")
         
@@ -289,7 +316,7 @@ def generate_embedding(self, filename: str, onlyfile: bool = False, api_task_id:
         
         # Очистка файла
         _cleanup_file(filename, worker_name)
-        
+
         # Формируем результат
         result = {
             "status": "success",
@@ -298,6 +325,7 @@ def generate_embedding(self, filename: str, onlyfile: bool = False, api_task_id:
             "worker": worker_name,
             "text_length": text_length,
             "chunks_count": chunks_count,
+            "points_added": result_uniter,
             "file_extension": ext,
             "processed_at": datetime.now().isoformat()
         }
@@ -315,7 +343,7 @@ def generate_embedding(self, filename: str, onlyfile: bool = False, api_task_id:
                 completed_at=datetime.now().isoformat()
             )
         
-        logger.info(f"✅ [{worker_name}] Файл {filename} успешно обработан!")
+        logger.info(f"[{worker_name}] Файл {filename} успешно обработан!")
         
         return result
         
@@ -391,7 +419,7 @@ def generate_embedding_batch(self, file_paths: list[str], folder_name: str = "",
     results = []
     errors = []
     
-    logger.info(f"🚀 [{worker_name}] Starting batch task {task_id}: {total_files} files in {folder_name}")
+    logger.info(f"[{worker_name}] Starting batch task {task_id}: {total_files} files in {folder_name}")
     
     # Начальный статус для batch задачи
     if task_id and not task_id.startswith('celery-'):
@@ -434,7 +462,7 @@ def generate_embedding_batch(self, file_paths: list[str], folder_name: str = "",
                 )
                 
                 # Ждем завершения задачи
-                task_result = async_result.get(timeout=300)  # 5 минут таймаут
+                task_result = async_result.get(timeout=300)
                 
                 if task_result.get('status') == 'skipped':
                     results.append({
@@ -476,7 +504,7 @@ def generate_embedding_batch(self, file_paths: list[str], folder_name: str = "",
             "completed_at": datetime.now().isoformat()
         }
         
-        logger.info(f"✅ [{worker_name}] Пакетная обработка завершена: {processed_files}/{total_files} успешно")
+        logger.info(f"[{worker_name}] Пакетная обработка завершена: {processed_files}/{total_files} успешно")
 
         # Очистка папки если она была загружена
         if folder_name:
