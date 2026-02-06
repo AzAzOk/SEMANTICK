@@ -1,6 +1,12 @@
 services:
   rabbitmq:
     image: rabbitmq:4.2-management
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     container_name: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: "appuser"
@@ -16,7 +22,8 @@ services:
     env_file:
       - .env
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
     volumes:
       - uploads:/data/uploads
 
@@ -74,7 +81,8 @@ services:
     env_file:
       - .env
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
     volumes:
       - uploads:/data/uploads:ro
 
@@ -98,9 +106,12 @@ services:
       - CELERY_BROKER_URL=amqp://appuser:strongpassword@rabbitmq:5672//
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
     depends_on:
-      - rabbitmq
-      - redis
-      - ollama
+      redis:
+        condition: service_started
+      ollama:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
     volumes:
       - uploads:/data/uploads:ro
 
