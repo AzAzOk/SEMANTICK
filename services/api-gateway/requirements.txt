@@ -1,0 +1,25 @@
+# API Gateway Requirements (Microservices Architecture)
+
+# FastAPI и зависимости
+fastapi==0.115.4
+uvicorn[standard]==0.32.0
+python-multipart==0.0.9
+
+# Pydantic
+pydantic==2.10.3
+pydantic-settings==2.8.1
+
+# RabbitMQ (заменяет Celery для задач)
+aio-pika==9.4.3
+
+# Redis (для статусов задач)
+redis[asyncio]==5.2.0
+
+# HTTP клиент для микросервисов
+httpx==0.27.0
+
+# Логирование
+loguru==0.7.3
+
+# Переменные окружения
+python-dotenv==1.0.1

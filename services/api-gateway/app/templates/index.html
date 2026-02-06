@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Панель загрузок</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="icon" href="/ico/star-16.ico">
+    <link rel="stylesheet" href="/static/index.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-content">
+                <i class="fas fa-cloud-download-alt icon"></i>
+                <h1>Панель загрузок</h1>
+            </div>
+            <div class="status">
+                <div class="status-indicator" id="wsIndicator"></div>
+                <span id="wsStatus">Подключение...</span>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <div class="card">
+                <h2 class="card-title"><i class="fas fa-folder-open"></i> Выбор данных</h2>
+                <div class="file-selection">
+                    <div class="input-group">
+                        <label><i class="fas fa-folder"></i> Выберите файлы для загрузки</label>
+                        <div class="folder-input">
+                            <input type="text" id="folderInput" class="file-input" placeholder="Файл не выбран" readonly>
+                            <button type="button" class="btn" id="selectFolderBtn">
+                                <i class="fas fa-folder-open"></i> Обзор
+                            </button>
+                            <input type="file" 
+                            id="fileInput" 
+                            class="hidden-file-input" 
+                            multiple 
+                            hidden 
+                            accept=".txt,.pdf,.docx,.doc,.xlsx,.xls,.dxf,.dwg,.png,.jpg,.jpeg,.tiff,.bmp">
+                        </div>
+                        <div class="folder-input">
+                            <input type="text" id="folderInputSecret" class="file-input" placeholder="Путь до папки" readonly>
+                            <button type="button" class="btn" id="selectFolderBtnSecret">
+                                <i class="fas fa-folder-open"></i> Обзор папки
+                            </button>
+                            <input type="file" 
+                            id="folderFileInput" 
+                            class="hidden-file-input" 
+                            webkitdirectory
+                            directory
+                            multiple 
+                            hidden>
+                        </div>
+                    </div>
+
+                    <button class="btn" id="startUploadBtn" style="margin-top: 10px;">
+                        <i class="fas fa-upload"></i> Начать загрузку
+                    </button>
+                </div>
+            </div>
+
+            <div class="card log-output">
+                <div class="log-header">
+                    <h2 class="card-title"><i class="fas fa-terminal"></i> Журнал операций</h2>
+                    <div class="log-controls">
+                        <button class="btn btn-secondary" id="clearLogsBtn">
+                            <i class="fas fa-trash-alt"></i> Очистить
+                        </button>
+                        <button class="btn btn-secondary" id="pauseLogsBtn">
+                            <i class="fas fa-pause"></i> Пауза
+                        </button>
+                    </div>
+                </div>
+                <div class="log-content" id="logContent">
+                    <div class="log-entry info">
+                        <span class="log-timestamp"></span> Система инициализирована. Панель загрузок готова к работе.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Панель загрузок &copy; 2025 | Версия 2.0.0 (WebSocket)</p>
+        </footer>
+    </div>
+
+    <script>
+        // ==========================================
+        // WEBSOCKET MANAGER
+        // ==========================================
+        class WebSocketManager {
+            constructor() {
+                this.ws = null;
+                this.clientId = this.generateClientId();
+                this.reconnectAttempts = 0;
+                this.maxReconnectAttempts = 5;
+                this.reconnectDelay = 1000;
+                this.isConnected = false;
+                this.messageHandlers = new Map();
+                this.connect();
+            }
+
+            generateClientId() {
+                return `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            }
+
+            connect() {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/ws/${this.clientId}`;
+                
+                try {
+                    this.ws = new WebSocket(wsUrl);
+                    
+                    this.ws.onopen = () => {
+                        this.isConnected = true;
+                        this.reconnectAttempts = 0;
+                        console.log('WebSocket подключен');
+                        this.updateStatus('online', 'Система активна');
+                    };
+
+                    this.ws.onmessage = (event) => {
+                        try {
+                            const data = JSON.parse(event.data);
+                            this.handleMessage(data);
+                        } catch (e) {
+                            console.error('Ошибка парсинга сообщения:', e);
+                        }
+                    };
+
+                    this.ws.onerror = (error) => {
+                        console.error('WebSocket ошибка:', error);
+                        this.updateStatus('error', 'Ошибка соединения');
+                    };
+
+                    this.ws.onclose = () => {
+                        this.isConnected = false;
+                        console.log('WebSocket отключен');
+                        this.updateStatus('offline', 'Переподключение...');
+                        this.attemptReconnect();
+                    };
+
+                } catch (error) {
+                    console.error('Ошибка создания WebSocket:', error);
+                    this.attemptReconnect();
+                }
+            }
+
+            attemptReconnect() {
+                if (this.reconnectAttempts < this.maxReconnectAttempts) {
+                    this.reconnectAttempts++;
+                    const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+                    console.log(`Переподключение через ${delay}ms (попытка ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+                    setTimeout(() => this.connect(), delay);
+                } else {
+                    console.error('Превышено количество попыток переподключения');
+                    this.updateStatus('error', 'Соединение потеряно');
+                }
+            }
+
+            updateStatus(status, text) {
+                const indicator = document.getElementById('wsIndicator');
+                const statusText = document.getElementById('wsStatus');
+                
+                if (indicator && statusText) {
+                    indicator.className = 'status-indicator';
+                    if (status === 'online') {
+                        indicator.classList.add('online');
+                    } else if (status === 'error') {
+                        indicator.classList.add('error');
+                    }
+                    statusText.textContent = text;
+                }
+            }
+
+            send(data) {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify(data));
+                } else {
+                    console.warn('WebSocket не подключен, сообщение не отправлено:', data);
+                }
+            }
+
+            subscribe(taskId, handler) {
+                this.messageHandlers.set(taskId, handler);
+                this.send({
+                    type: 'subscribe',
+                    task_id: taskId
+                });
+            }
+
+            unsubscribe(taskId) {
+                this.messageHandlers.delete(taskId);
+                this.send({
+                    type: 'unsubscribe',
+                    task_id: taskId
+                });
+            }
+
+            handleMessage(data) {
+                const handler = this.messageHandlers.get(data.task_id);
+                if (handler) {
+                    handler(data);
+                }
+            }
+
+            close() {
+                if (this.ws) {
+                    this.ws.close();
+                }
+            }
+        }
+
+        const wsManager = new WebSocketManager();
+
+        // ==========================================
+        // TASK MANAGER (обновленный для WebSocket)
+        // ==========================================
+        class TaskManager {
+            constructor() {
+                this.activeTasks = new Map();
+            }
+            
+            add(taskId, filename, filepath = null) {
+                const taskInfo = {
+                    filename: filename,
+                    filepath: filepath,
+                    startTime: Date.now(),
+                    lastStatus: null,
+                    loggedSteps: new Set()
+                };
+                
+                this.activeTasks.set(taskId, taskInfo);
+                console.log(`Задача добавлена: ${taskId} (${filename})`);
+                this.updateCounter();
+                
+                wsManager.subscribe(taskId, (data) => this.handleTaskUpdate(taskId, data));
+            }
+            
+            handleTaskUpdate(taskId, data) {
+                const taskInfo = this.activeTasks.get(taskId);
+                if (!taskInfo) return;
+
+                const status = data.status;
+                const progress = data.progress || 0;
+                const message = data.message || '';
+                const currentStep = data.current_step || 0;
+
+                if (status === 'pending' && taskInfo.lastStatus !== 'pending') {
+                    addLog('info', `${taskInfo.filename}: В очереди на обработку...`);
+                    taskInfo.lastStatus = 'pending';
+                }
+                else if (status === 'processing') {
+                    const stepKey = `${currentStep}-${progress}`;
+                    if (!taskInfo.loggedSteps.has(stepKey)) {
+                        addLog('info', `${taskInfo.filename}: ${message} (${progress}%)`);
+                        taskInfo.loggedSteps.add(stepKey);
+                        taskInfo.lastStatus = 'processing';
+                    }
+                }
+                else if (status === 'completed') {
+                    if (taskInfo.lastStatus !== 'completed') {
+                        this.remove(taskId);
+                        const result = data.result || {};
+                        
+                        if (result.status === 'skipped') {
+                            addLog('warning', `${taskInfo.filename}: Файл уже существует в базе данных`);
+                        } else {
+                            addLog('success', `${taskInfo.filename}: Обработан успешно!`);
+                            if (result.chunks_count) {
+                                addLog('info', `Чанков: ${result.chunks_count}, Точек в БД: ${result.points_added}`);
+                            }
+                        }
+                        if (data.result.batch_results) {
+                            addLog(
+                                'info',
+                                `Результаты обработки:\n` +
+                                data.result.batch_results
+                                    .map(f =>
+                                        `• ${f.filename}: ${
+                                            f.result === "skipped"
+                                                ? "Уже существует в БД"
+                                                : "Добавлен"
+                                        }`
+                                    )
+                                    .join('\n')
+                            )
+                        }
+
+                        taskInfo.lastStatus = 'completed';
+                    }
+                    checkAllTasksCompleted();
+                }
+                else if (status === 'failed') {
+                    if (taskInfo.lastStatus !== 'failed') {
+                        this.remove(taskId);
+                        addLog('error', `${taskInfo.filename}: Ошибка - ${data.error?.message || JSON.stringify(data.error)}`);
+                        taskInfo.lastStatus = 'failed';
+                    }
+                    checkAllTasksCompleted();
+                }
+                else if (status === 'cancelled') {
+                    if (taskInfo.lastStatus !== 'cancelled') {
+                        this.remove(taskId);
+                        addLog('warning', `${taskInfo.filename}: Задача отменена`);
+                        taskInfo.lastStatus = 'cancelled';
+                    }
+                    checkAllTasksCompleted();
+                }
+            }
+            
+            remove(taskId) {
+                if (this.activeTasks.has(taskId)) {
+                    const task = this.activeTasks.get(taskId);
+                    wsManager.unsubscribe(taskId);
+                    this.activeTasks.delete(taskId);
+                    console.log(`Задача завершена: ${taskId} (${task.filename})`);
+                    this.updateCounter();
+                }
+            }
+            
+            getAllTaskIds() {
+                return Array.from(this.activeTasks.keys());
+            }
+            
+            updateCounter() {
+                const count = this.activeTasks.size;
+                console.log(`Активных задач: ${count}`);
+            }
+            
+            async cancelAll() {
+                const taskIds = this.getAllTaskIds();
+                if (taskIds.length === 0) return;
+                
+                console.log(`Отменяем ${taskIds.length} активных задач...`);
+                
+                try {
+                    const response = await fetch('/tasks-cancel-batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(taskIds),
+                        keepalive: true
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        console.log(`Отменено задач: ${result.cancelled_count}`);
+                    }
+                } catch (error) {
+                    console.error('Ошибка отмены задач:', error);
+                }
+            }
+            
+            cancelAllSync() {
+                const taskIds = this.getAllTaskIds();
+                if (taskIds.length === 0) return;
+                
+                navigator.sendBeacon('/tasks-cancel-batch', JSON.stringify(taskIds));
+            }
+        }
+
+        const taskManager = new TaskManager();
+        const listDocskipped = []
+
+        // ==========================================
+        // UI ELEMENTS
+        // ==========================================
+        const fileInput = document.getElementById('fileInput');
+        const folderInput = document.getElementById('folderInput');
+        const folderInputSecret = document.getElementById('folderInputSecret');
+        const folderFileInput = document.getElementById('folderFileInput');
+        const selectFolderBtn = document.getElementById('selectFolderBtn');
+        const selectFolderBtnSecret = document.getElementById('selectFolderBtnSecret');
+        const startUploadBtn = document.getElementById('startUploadBtn');
+        const clearLogsBtn = document.getElementById('clearLogsBtn');
+        const pauseLogsBtn = document.getElementById('pauseLogsBtn');
+        const logContent = document.getElementById('logContent');
+        
+        let logsPaused = false;
+        let uploadInProgress = false;
+        let logEntries = 0;
+        let selectedFiles = null;
+        let selectedFolderFiles = null;
+        let animationInterval = null;
+
+        // ==========================================
+        // FILE SELECTION
+        // ==========================================
+        selectFolderBtn.addEventListener('click', () => fileInput.click());
+        selectFolderBtnSecret.addEventListener('click', () => folderFileInput.click());
+
+        fileInput.addEventListener('change', function() {
+            if (this.files.length > 0) {
+                selectedFiles = this.files;
+                selectedFolderFiles = null;
+                folderInput.value = `Выбрано файлов: ${this.files.length}`;
+                folderInputSecret.value = '';
+                addLog('info', `Выбрано ${this.files.length} файл(ов)`);
+            }
+        });
+
+        folderFileInput.addEventListener('change', function() {
+            if (this.files.length > 0) {
+                selectedFolderFiles = this.files;
+                selectedFiles = null;
+                const folderName = this.files[0].webkitRelativePath.split('/')[0];
+                folderInputSecret.value = `Папка: ${folderName} (${this.files.length} файлов)`;
+                folderInput.value = '';
+                addLog('info', `Выбрана папка "${folderName}" с ${this.files.length} файлами`);
+            }
+        });
+
+        // ==========================================
+        // FILE UPLOAD
+        // ==========================================
+        async function startFileBtn() {
+            if (!selectedFiles || selectedFiles.length === 0) {
+                addLog('error', 'Файлы не выбраны');
+                return;
+            }
+
+            uploadInProgress = true;
+            startUploadBtn.disabled = true;
+            startButtonAnimation();
+            
+            const formData = new FormData();
+            Array.from(selectedFiles).forEach(file => formData.append('file', file));
+
+            try {
+                const response = await fetch('/select-file', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+                
+                if (result.status === 'accepted') {
+                    addLog('success', `${result.message}`);
+                    result.files.forEach(fileInfo => {
+                        taskManager.add(fileInfo.task_id, fileInfo.filename);
+                    });
+                }
+            } catch (error) {
+                addLog('error', `Ошибка загрузки: ${error.message}`);
+                stopButtonAnimation();
+                startUploadBtn.disabled = false;
+                uploadInProgress = false;
+            }
+        }
+
+        async function startFolderBtn() {
+            if (!selectedFolderFiles || selectedFolderFiles.length === 0) {
+                addLog('error', 'Папка не выбрана');
+                return;
+            }
+
+            uploadInProgress = true;
+            startUploadBtn.disabled = true;
+            startButtonAnimation();
+
+            const formData = new FormData();
+            const folderName = selectedFolderFiles[0].webkitRelativePath.split('/')[0];
+            
+            Array.from(selectedFolderFiles).forEach(file => formData.append('file', file));
+
+            try {
+                const response = await fetch(`/select-folder?folder_name=${encodeURIComponent(folderName)}`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+                
+                if (result.status === 'accepted') {
+                    addLog('success', `${result.message}`);
+                    taskManager.add(result.task_id, `Папка: ${result.folder_name}`);
+                }
+            } catch (error) {
+                addLog('error', `Ошибка загрузки папки: ${error.message}`);
+                stopButtonAnimation();
+                startUploadBtn.disabled = false;
+                uploadInProgress = false;
+            }
+        }
+
+        startUploadBtn.addEventListener('click', function() {
+            const hasRegularFiles = selectedFiles && selectedFiles.length > 0;
+            const hasFolderFiles = selectedFolderFiles && selectedFolderFiles.length > 0;
+
+            if (hasFolderFiles) {
+                startFolderBtn();
+            } else if (hasRegularFiles) {
+                startFileBtn();
+            } else {
+                addLog('error', 'Выберите файлы или папку для загрузки');
+            }
+        });
+
+        function checkAllTasksCompleted() {
+            if (taskManager.activeTasks.size === 0 && uploadInProgress) {
+                addLog('success', 'Все файлы обработаны!');
+                addLog('info', 'Система готова к новой загрузке');
+                stopButtonAnimation();
+                startUploadBtn.disabled = false;
+                uploadInProgress = false;
+            }
+        }
+
+        function startButtonAnimation() {
+            let dots = 0;
+            animationInterval = setInterval(() => {
+                dots = (dots + 1) % 4;
+                const dotsStr = '.'.repeat(dots);
+                startUploadBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Обработка${dotsStr}`;
+            }, 500);
+        }
+
+        function stopButtonAnimation() {
+            if (animationInterval) {
+                clearInterval(animationInterval);
+                animationInterval = null;
+            }
+            startUploadBtn.innerHTML = '<i class="fas fa-upload"></i> Начать загрузку';
+        }
+
+        // ==========================================
+        // LOGGING
+        // ==========================================
+        clearLogsBtn.addEventListener('click', function() {
+            logContent.innerHTML = '';
+            addLog('info', 'Журнал операций очищен');
+            logEntries = 0;
+        });
+
+        pauseLogsBtn.addEventListener('click', function() {
+            logsPaused = !logsPaused;
+            const icon = pauseLogsBtn.querySelector('i');
+            if (logsPaused) {
+                icon.className = 'fas fa-play';
+                pauseLogsBtn.innerHTML = '<i class="fas fa-play"></i> Возобновить';
+                addLog('warning', 'Вывод логов приостановлен');
+            } else {
+                icon.className = 'fas fa-pause';
+                pauseLogsBtn.innerHTML = '<i class="fas fa-pause"></i> Пауза';
+                addLog('success', 'Вывод логов возобновлен');
+            }
+        });
+
+        function addLog(type, message) {
+            if (logsPaused && type !== 'warning' && type !== 'error') return;
+            
+            const timestamp = new Date().toLocaleTimeString('ru-RU', { hour12: false });
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry ${type}`;
+            logEntry.innerHTML = `<span class="log-timestamp">[${timestamp}]</span> ${message}`;
+            
+            logContent.appendChild(logEntry);
+            logContent.scrollTop = logContent.scrollHeight;
+            
+            logEntries++;
+            
+            if (logEntries > 100) {
+                logContent.removeChild(logContent.firstChild);
+                logEntries--;
+            }
+        }
+
+        // ==========================================
+        // CLEANUP
+        // ==========================================
+        window.addEventListener('beforeunload', function(e) {
+            if (taskManager.activeTasks.size > 0) {
+                taskManager.cancelAllSync();
+                wsManager.close();
+                e.preventDefault();
+                e.returnValue = `У вас ${taskManager.activeTasks.size} активных загрузок. Закрыть страницу?`;
+            }
+        });
+
+        setInterval(() => {
+            if (wsManager.isConnected) {
+                wsManager.send({ type: 'ping' });
+            }
+        }, 30000);
+
+    </script>
+</body>
+</html>
